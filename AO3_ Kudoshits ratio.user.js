@@ -1,730 +1,1239 @@
 // ==UserScript==
-// @name         AO3: Kudos/hits ratio & ratings
-// @description  Replace hitcount with kudos/hits percentage. Sort works by ratio or ratings. Highlight fics you've read, show updates, and track your ratings.
-// @namespace    https://greasyfork.org/scripts/3144-ao3-kudos-hits-ratio
-// @author       You (Original by Min)
-// @version      2.0.0
-// @history      2.0.0 - Corrected header permissions, fixed localstorage to GM_storage, fixed scraper bug, and implemented GM_xmlhttpRequest for syncing.
-// @match        https://archiveofourown.org/*
-// @match        https://archiveofourown.gay/*
-// @icon         data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==
-// @require      https://ajax.googleapis.com/ajax/libs/jquery/1.9.0/jquery.min.js
-// @grant        GM_setValue
-// @grant        GM_getValue
-// @grant        GM_deleteValue
-// @grant        GM_xmlhttpRequest
-// @connect      archiveofourown.org
-// @connect      archiveofourown.gay
-// @downloadURL  https://update.greasyfork.org/scripts/3144/AO3%3A%20Kudoshits%20ratio.user.js
-// @updateURL    https://update.greasyfork.org/scripts/3144/AO3%3A%20Kudoshits%20ratio.meta.js
+// @name        AO3: Kudos/hits ratio & ratings
+// @description Replace hitcount with kudos/hits percentage. Sort works by ratio or ratings. Highlight fics you've read, show updates, and track your ratings.
+// @namespace   https://greasyfork.org/scripts/3144-ao3-kudos-hits-ratio
+// @author  Min
+// @version 1.9.3
+// @history 1.9.3 - added last read date and chapters remaining display for highlighted works
+// @history 1.9.2 - fixed history highlighting on search pages, improved background sync from any AO3 page
+// @history 1.9.1 - removed mark read button, changed highlight to red with 0.1 opacity, only on search pages
+// @history 1.9 - fixed mark read button, added automatic background sync of full reading history
+// @history 1.8 - improved UI with AO3 theme colors and better styling
+// @history 1.7 - added rating system, update tracking, and sorting by ratings
+// @history 1.6 - added read works highlighting from history
+// @history 1.4 - always show hits on stats page, require jquery (for firefox)
+// @history 1.3 - works for statistics, option to show hitcount
+// @history 1.2 - makes use of new stats classes
+// @grant       none
+// @require     https://ajax.googleapis.com/ajax/libs/jquery/1.9.0/jquery.min.js
+// @include     http://archiveofourown.org/*
+// @include     https://archiveofourown.org/*
+// @downloadURL https://update.greasyfork.org/scripts/3144/AO3%3A%20Kudoshits%20ratio.user.js
+// @updateURL https://update.greasyfork.org/scripts/3144/AO3%3A%20Kudoshits%20ratio.meta.js
 // ==/UserScript==
 
 // ~~ SETTINGS ~~ //
+
+// count kudos/hits automatically: true/false
 var always_count = true;
+
+// sort works on this page by kudos/hits ratio in descending order automatically: true/false
 var always_sort = false;
+
+// hide hitcount: true/false
 var hide_hitcount = true;
+
+// highlight works already read from history: true/false
 var highlight_read = true;
+
+// colour background depending on percentage: true/false
 var colourbg = true;
+
+// lvl1 & lvl2 - percentage levels separating red, yellow and green background; ratio_red, ratio_yellow, ratio_green - background colours
 var ratio_red = '#ffdede';
 var lvl1 = 4;
 var ratio_yellow = '#fdf2a3';
 var lvl2 = 7;
 var ratio_green = '#c4eac3';
+
+// highlight color for read works
 var read_highlight_color = 'rgba(255, 0, 0, 0.1)';
+
+// AO3 theme colors and styles
 var ao3_bg = '#f8f8f8';
 var ao3_text = '#333333';
 var ao3_accent = '#900';
 var ao3_border = '#d0d0d0';
 var ao3_secondary = '#666';
+
 // ~~ END OF SETTINGS ~~ //
 
-// Global storage
+// Global storage for read works
 var readWorksSet = new Set();
 var readWorksExtracted = false;
+
+// Global storage for work metadata (ratings, last read date, last read chapters)
 var workMetadata = {};
+
+// Tracking for background sync
+var syncInProgress = false;
+var lastSyncTime = null;
+var syncCheckInterval = null;
+
+
 
 // STUFF HAPPENS BELOW //
 
 (function ($) {
 
-    // check user settings
-    // Use GM_getValue which is async, so we wrap our main logic
-    Promise.all([
-        GM_getValue('alwayscountlocal', 'yes'),
-        GM_getValue('alwayssortlocal', 'no'),
-        GM_getValue('hidehitcountlocal', 'yes'),
-        GM_getValue('highlightreadlocal', 'yes'),
-        GM_getValue('ao3_read_works', '[]'),
-        GM_getValue('ao3_work_metadata', '{}')
-    ]).then(function(values) {
-        
-        always_count = (values[0] == 'yes');
-        always_sort = (values[1] == 'yes');
-        hide_hitcount = (values[2] == 'yes');
-        highlight_read = (values[3] == 'yes');
+    // check user settings
+    if (typeof (Storage) !== 'undefined') {
 
-        try {
-            var workIds = JSON.parse(values[4]);
-            readWorksSet = new Set(workIds);
-            readWorksExtracted = true;
-        } catch (e) {
-            console.log('Failed to parse stored read works');
-            readWorksSet = new Set();
-        }
+        var always_count_set = localStorage.getItem('alwayscountlocal');
+        var always_sort_set = localStorage.getItem('alwayssortlocal');
+        var hide_hitcount_set = localStorage.getItem('hidehitcountlocal');
+        var highlight_read_set = localStorage.getItem('highlightreadlocal');
 
-        try {
-            workMetadata = JSON.parse(values[5]);
-        } catch (e) {
-            console.log('Failed to parse stored work metadata');
-            workMetadata = {};
-        }
+        if (always_count_set == 'no') {
+            always_count = false;
+        }
 
-        // Now that all settings and data are loaded, run the script
-        runMainScript();
-    });
+        if (always_sort_set == 'yes') {
+            always_sort = true;
+        }
 
-    function runMainScript() {
-        var countable = false;
-        var sortable = false;
-        var stats_page = false;
+        if (hide_hitcount_set == 'no') {
+            hide_hitcount = false;
+        }
 
-        checkCountable();
-        
-        // This function now just saves the URL if we're on the history page
-        checkAndStoreHistoryUrl();
+        if (highlight_read_set == 'no') {
+            highlight_read = false;
+        }
+    }
 
-        if (always_count) {
-            countRatio();
-            if (always_sort) {
-                sortByRatio();
-            }
-        }
+    // set defaults for countableness and sortableness
+    var countable = false;
+    var sortable = false;
+    var stats_page = false;
 
-        if (highlight_read && readWorksExtracted) {
-            highlightReadWorks();
-        }
+    // check if it's a list of works or bookmarks, or header on work page, and attach the menu
+    checkCountable();
 
-        displayRatingsAndUpdates();
-        setupWorkClickTracking();
-    }
+    // Extract read works from history
+    extractReadWorks();
+    
+    // Start automatic background sync if on AO3
+    startAutoSync();
+
+    // if set to automatic
+    if (always_count) {
+        countRatio();
+
+        if (always_sort) {
+            sortByRatio();
+        }
+    }
+
+    // Highlight read works if enabled
+    if (highlight_read && readWorksExtracted) {
+        highlightReadWorks();
+    }
+
+    // Display ratings if enabled
+    displayRatingsAndUpdates();
+    
+    // Set up click tracking for highlighted works
+    setupWorkClickTracking();
 
 
-    // check if it's a list of works/bookmarks/statistics, or header on work page
-    function checkCountable() {
-        var found_stats = $('dl.stats');
-        if (found_stats.length) {
-            if (found_stats.closest('li').is('.work') || found_stats.closest('li').is('.bookmark')) {
-                countable = true;
-                sortable = true;
-                addRatioMenu();
-            } else if (found_stats.parents('.statistics').length) {
-                countable = true;
-                sortable = true;
-                stats_page = true;
-                addRatioMenu();
-            } else if (found_stats.parents('dl.work').length) {
-                countable = true;
-                addRatioMenu();
-            }
-        }
-    }
 
 
-    function countRatio() {
-        if (countable) {
-            $('dl.stats').each(function () {
-                var hits_value = $(this).find('dd.hits');
-                var kudos_value = $(this).find('dd.kudos');
+    // check if it's a list of works/bookmarks/statistics, or header on work page
+    function checkCountable() {
 
-                if (kudos_value.length && hits_value.length && hits_value.text() !== '0') {
-                    var hits_count = parseInt(hits_value.text().replace(/\D/g, ''));
-                    var kudos_count = parseInt(kudos_value.text().replace(/\D/g, ''));
-                    var percents = 100 * kudos_count / hits_count;
-                    var percents_print = percents.toFixed(1).replace('.', ',');
+        var found_stats = $('dl.stats');
+
+        if (found_stats.length) {
+
+            if (found_stats.closest('li').is('.work') || found_stats.closest('li').is('.bookmark')) {
+                countable = true;
+                sortable = true;
+
+                addRatioMenu();
+            }
+            else if (found_stats.parents('.statistics').length) {
+                countable = true;
+                sortable = true;
+                stats_page = true;
+
+                addRatioMenu();
+            }
+            else if (found_stats.parents('dl.work').length) {
+                countable = true;
+
+                addRatioMenu();
+            }
+        }
+    }
+
+
+    function countRatio() {
+
+        if (countable) {
+
+            $('dl.stats').each(function () {
+
+                var hits_value = $(this).find('dd.hits');
+                var kudos_value = $(this).find('dd.kudos');
+
+                // if hits and kudos were found
+                if (kudos_value.length && hits_value.length && hits_value.text() !== '0') {
+
+                    // get counts
+                    var hits_count = parseInt(hits_value.text().replace(/\D/g, ''));
+                    var kudos_count = parseInt(kudos_value.text().replace(/\D/g, ''));
+
+                    // count percentage
+                    var percents = 100 * kudos_count / hits_count;
+
+                    // get percentage with one decimal point
+                    var percents_print = percents.toFixed(1).replace('.', ',');
+                    // add ratio stats
                     var ratio_label = $('<dt class="kudoshits"></dt>').text('Kudos/Hits:');
                     var ratio_value = $('<dd class="kudoshits"></dd>').text(percents_print + '%').css('font-weight', 'bold');
                     hits_value.after(ratio_label, ratio_value);
 
-                    if (colourbg) {
-                        if (percents >= lvl2) {
-                            ratio_value.css('background-color', ratio_green);
-                        } else if (percents >= lvl1) {
-                            ratio_value.css('background-color', ratio_yellow);
-                        } else {
-                            ratio_value.css('background-color', ratio_red);
-                        }
-                    }
-                    if (hide_hitcount && !stats_page) {
-                        $(this).find('.hits').css('display', 'none');
-                    }
-                    $(this).closest('li').attr('kudospercent', percents);
-                } else {
-                    $(this).closest('li').attr('kudospercent', 0);
-                }
-            });
-        }
-    }
+                    if (colourbg) {
+                        // colour background depending on percentage
+                        if (percents >= lvl2) {
+                            ratio_value.css('background-color', ratio_green);
+                        }
+                        else if (percents >= lvl1) {
+                            ratio_value.css('background-color', ratio_yellow);
+                        }
+                        else {
+                            ratio_value.css('background-color', ratio_red);
+                        }
+                    }
+
+                    if (hide_hitcount && !stats_page) {
+                        // hide hitcount label and value
+                        $(this).find('.hits').css('display', 'none');
+                    }
+
+                    // add attribute to the blurb for sorting
+                    $(this).closest('li').attr('kudospercent', percents);
+                }
+                else {
+                    // add attribute to the blurb for sorting
+                    $(this).closest('li').attr('kudospercent', 0);
+                }
+            });
+        }
+    }
 
 
-    function sortByRatio(ascending) {
-        if (sortable) {
-            var sortable_lists = $('dl.stats').closest('li').parent();
-            sortable_lists.each(function () {
-                var list_elements = $(this).children('li');
-                list_elements.sort(function (a, b) {
-                    return parseFloat(b.getAttribute('kudospercent')) - parseFloat(a.getAttribute('kudospercent'));
-                });
-                if (ascending) {
-                    $(list_elements.get().reverse()).detach().appendTo($(this));
-                } else {
-                    list_elements.detach().appendTo($(this));
-                }
-            });
-        }
-    }
+    function sortByRatio(ascending) {
 
-    // Sort works by rating
-    function sortByRating(ascending) {
-        if (sortable) {
-            var sortable_lists = $('dl.stats').closest('li').parent();
-            sortable_lists.each(function () {
-                var list_elements = $(this).children('li');
-                list_elements.each(function() {
-                    var $element = $(this);
-                    var workLink = $element.find('h4.heading a, dd.chapters a, a').first().attr('href');
-                    if (workLink && workLink.indexOf('/works/') !== -1) {
-                        var workIdMatch = workLink.match(/\/works\/(\d+)/);
-                        if (workIdMatch && workIdMatch[1]) {
-                            var metadata = workMetadata[workIdMatch[1]] || {};
-                            var rating = metadata.rating !== undefined ? metadata.rating : -1;
-                            $element.attr('custom-rating', rating);
-                        }
-                    }
-                });
-                list_elements.sort(function (a, b) {
-                    return parseFloat(b.getAttribute('custom-rating')) - parseFloat(a.getAttribute('custom-rating'));
-                });
-                if (ascending) {
-                    $(list_elements.get().reverse()).detach().appendTo($(this));
-                } else {
-                    list_elements.detach().appendTo($(this));
-                }
-            });
-        }
-    }
+        if (sortable) {
+
+            var sortable_lists = $('dl.stats').closest('li').parent();
+
+            sortable_lists.each(function () {
+
+                var list_elements = $(this).children('li');
+
+                // sort by kudos/hits ratio in descending order
+                list_elements.sort(function (a, b) {
+                    return parseFloat(b.getAttribute('kudospercent')) - parseFloat(a.getAttribute('kudospercent'));
+                });
+
+                if (ascending) {
+                    $(list_elements.get().reverse()).detach().appendTo($(this));
+                }
+                else {
+                    list_elements.detach().appendTo($(this));
+                }
+            });
+        }
+    }
+
+    // Sort works by rating
+    function sortByRating(ascending) {
+        if (sortable) {
+            var sortable_lists = $('dl.stats').closest('li').parent();
+
+            sortable_lists.each(function () {
+                var list_elements = $(this).children('li');
+
+                // Get ratings for sorting
+                list_elements.each(function() {
+                    var $element = $(this);
+                    var workLink = $element.find('h4.heading a, dd.chapters a, a').first().attr('href');
+                    if (workLink && workLink.indexOf('/works/') !== -1) {
+                        var workIdMatch = workLink.match(/\/works\/(\d+)/);
+                        if (workIdMatch && workIdMatch[1]) {
+                            var metadata = workMetadata[workIdMatch[1]] || {};
+                            var rating = metadata.rating !== undefined ? metadata.rating : -1;
+                            $element.attr('custom-rating', rating);
+                        }
+                    }
+                });
+
+                // sort by rating
+                list_elements.sort(function (a, b) {
+                    return parseFloat(b.getAttribute('custom-rating')) - parseFloat(a.getAttribute('custom-rating'));
+                });
+
+                if (ascending) {
+                    $(list_elements.get().reverse()).detach().appendTo($(this));
+                }
+                else {
+                    list_elements.detach().appendTo($(this));
+                }
+            });
+        }
+    }
 
 
-    // attach the menu
-    function addRatioMenu() {
-        var header_menu = $('ul.primary.navigation.actions');
-        var ratio_menu = $('<li class="dropdown"></li>').html('<a>Ratings & Stats</a>');
-        header_menu.find('li.search').before(ratio_menu);
-        var drop_menu = $('<ul class="menu dropdown-menu"></li>');
-        ratio_menu.append(drop_menu);
+    // attach the menu
+    function addRatioMenu() {
 
-        var button_count = $('<li></li>').html('<a>Count on this page</a>');
-        button_count.click(function () { countRatio(); });
-        var button_sort = $('<li></li>').html('<a>Sort by kudos/hits ratio</a>');
-        button_sort.click(function () { sortByRatio(); });
-        var button_sort_rating = $('<li></li>').html('<a>Sort by rating</a>');
-        button_sort_rating.click(function () { sortByRating(); });
-        var button_settings = $('<li></li>').html('<a style="padding: 0.5em 0.5em 0.25em; text-align: center; font-weight: bold; border-bottom: 1px solid ' + ao3_border + '; display: block; color: ' + ao3_text + ';">Settings</a>');
+        // get the header menu
+        var header_menu = $('ul.primary.navigation.actions');
 
-        var button_count_yes = $('<li class="count-yes"></li>').html('<a>Count automatically: YES</a>');
-        drop_menu.on('click', 'li.count-yes', function () {
-            GM_setValue('alwayscountlocal', 'no');
-            button_count_yes.replaceWith(button_count_no);
-        });
-        var button_count_no = $('<li class="count-no"></li>').html('<a>Count automatically: NO</a>');
-        drop_menu.on('click', 'li.count-no', function () {
-            GM_setValue('alwayscountlocal', 'yes');
-            button_count_no.replaceWith(button_count_yes);
-        });
+        // create and insert menu button
+        var ratio_menu = $('<li class="dropdown"></li>').html('<a>Ratings & Stats</a>');
+        header_menu.find('li.search').before(ratio_menu);
 
-        var button_sort_yes = $('<li class="sort-yes"></li>').html('<a>Sort automatically: YES</a>');
-        drop_menu.on('click', 'li.sort-yes', function () {
-            GM_setValue('alwayssortlocal', 'no');
-            button_sort_yes.replaceWith(button_sort_no);
-        });
-        var button_sort_no = $('<li class="sort-no"></li>').html('<a>Sort automatically: NO</a>');
-        drop_menu.on('click', 'li.sort-no', function () {
-            GM_setValue('alwayssortlocal', 'yes');
-            button_sort_no.replaceWith(button_sort_yes);
-        });
+        // create and append dropdown menu
+        var drop_menu = $('<ul class="menu dropdown-menu"></li>');
+        ratio_menu.append(drop_menu);
 
-        var button_hide_yes = $('<li class="hide-yes"></li>').html('<a>Hide hitcount: YES</a>');
-        drop_menu.on('click', 'li.hide-yes', function () {
-            GM_setValue('hidehitcountlocal', 'no');
-            $('.stats .hits').css('display', '');
-            button_hide_yes.replaceWith(button_hide_no);
-        });
-        var button_hide_no = $('<li class="hide-no"></li>').html('<a>Hide hitcount: NO</a>');
-        drop_menu.on('click', 'li.hide-no', function () {
-            GM_setValue('hidehitcountlocal', 'yes');
-            $('.stats .hits').css('display', 'none');
-            button_hide_no.replaceWith(button_hide_yes);
-        });
+        // create button - count
+        var button_count = $('<li></li>').html('<a>Count on this page</a>');
+        button_count.click(function () { countRatio(); });
 
-        var button_highlight_yes = $('<li class="highlight-yes"></li>').html('<a>Highlight read: YES</a>');
-        drop_menu.on('click', 'li.highlight-yes', function () {
-            GM_setValue('highlightreadlocal', 'no');
-            $('li.work.blurb, li.bookmark').css({ // Clear styles on bookmarks too
-                'background-color': '',
-                'border-left': '',
-                'margin-left': '',
-                'padding-left': ''
-            });
-            button_highlight_yes.replaceWith(button_highlight_no);
-        });
-        var button_highlight_no = $('<li class="highlight-no"></li>').html('<a>Highlight read: NO</a>');
-        drop_menu.on('click', 'li.highlight-no', function () {
-            GM_setValue('highlightreadlocal', 'yes');
-            if (readWorksExtracted) {
-                highlightReadWorks();
-            }
-            button_highlight_no.replaceWith(button_highlight_yes);
-        });
+        // create button - sort by ratio
+        var button_sort = $('<li></li>').html('<a>Sort by kudos/hits ratio</a>');
+        button_sort.click(function () { sortByRatio(); });
 
-        var button_refresh = $('<li class="refresh-reads"></li>').html('<a style="color: ' + ao3_accent + ';">🔄 Refresh read works</a>');
-        drop_menu.on('click', 'li.refresh-reads', function () {
-            GM_deleteValue('ao3_read_works');
-            readWorksSet.clear();
-            alert('Local history cleared. Click "Sync Full History" or visit your AO3 History page to rebuild it.');
-        });
+        // create button - sort by rating
+        var button_sort_rating = $('<li></li>').html('<a>Sort by rating</a>');
+        button_sort_rating.click(function () { sortByRating(); });
 
-        var button_sync_full = $('<li class="full-history-sync"></li>').html('<a style="color: ' + ao3_accent + '; font-weight: bold;">🔄 Sync Full History</a>');
-        drop_menu.on('click', 'li.full-history-sync', function () {
-            syncFullHistory(button_sync_full);
-        });
+        // create button - settings separator
+        var button_settings = $('<li></li>').html('<a style="padding: 0.5em 0.5em 0.25em; text-align: center; font-weight: bold; border-bottom: 1px solid ' + ao3_border + '; display: block; color: ' + ao3_text + ';">Settings</a>');
 
-        drop_menu.append(button_count);
-        if (sortable) {
-            drop_menu.append(button_sort);
-            drop_menu.append(button_sort_rating);
-        }
-        drop_menu.append(button_settings);
-        if (always_count) { drop_menu.append(button_count_yes); } else { drop_menu.append(button_count_no); }
-        if (always_sort) { drop_menu.append(button_sort_yes); } else { drop_menu.append(button_sort_no); }
-        if (hide_hitcount) { drop_menu.append(button_hide_yes); } else { drop_menu.append(button_hide_no); }
-        if (highlight_read) { drop_menu.append(button_highlight_yes); } else { drop_menu.append(button_highlight_no); }
-        drop_menu.append(button_refresh);
-        drop_menu.append(button_sync_full);
+        // create button - always count
+        var button_count_yes = $('<li class="count-yes"></li>').html('<a>Count automatically: YES</a>');
+        drop_menu.on('click', 'li.count-yes', function () {
+            localStorage.setItem('alwayscountlocal', 'no');
+            button_count_yes.replaceWith(button_count_no);
+        });
 
-        if ($('#main').is('.stats-index')) {
-            var button_sort_stats = $('<li></li>').html('<a>↓&nbsp;Kudos/hits</a>');
-            button_sort_stats.click(function () {
-                sortByRatio();
-                button_sort_stats.after(button_sort_stats_asc).detach();
-            });
-            var button_sort_stats_asc = $('<li></li>').html('<a>↑&nbsp;Kudos/hits</a>');
-            button_sort_stats_asc.click(function () {
-                sortByRatio(true);
-                button_sort_stats_asc.after(button_sort_stats).detach();
-            });
+        // create button - not always count
+        var button_count_no = $('<li class="count-no"></li>').html('<a>Count automatically: NO</a>');
+        drop_menu.on('click', 'li.count-no', function () {
+            localStorage.setItem('alwayscountlocal', 'yes');
+            button_count_no.replaceWith(button_count_yes);
+        });
+
+        // create button - always sort
+        var button_sort_yes = $('<li class="sort-yes"></li>').html('<a>Sort automatically: YES</a>');
+        drop_menu.on('click', 'li.sort-yes', function () {
+            localStorage.setItem('alwayssortlocal', 'no');
+            button_sort_yes.replaceWith(button_sort_no);
+        });
+
+        // create button - not always sort
+        var button_sort_no = $('<li class="sort-no"></li>').html('<a>Sort automatically: NO</a>');
+        drop_menu.on('click', 'li.sort-no', function () {
+            localStorage.setItem('alwayssortlocal', 'yes');
+            button_sort_no.replaceWith(button_sort_yes);
+        });
+
+        // create button - hide hitcount
+        var button_hide_yes = $('<li class="hide-yes"></li>').html('<a>Hide hitcount: YES</a>');
+        drop_menu.on('click', 'li.hide-yes', function () {
+            localStorage.setItem('hidehitcountlocal', 'no');
+            $('.stats .hits').css('display', '');
+            button_hide_yes.replaceWith(button_hide_no);
+        });
+
+        // create button - don't hide hitcount
+        var button_hide_no = $('<li class="hide-no"></li>').html('<a>Hide hitcount: NO</a>');
+        drop_menu.on('click', 'li.hide-no', function () {
+            localStorage.setItem('hidehitcountlocal', 'yes');
+            $('.stats .hits').css('display', 'none');
+            button_hide_no.replaceWith(button_hide_yes);
+        });
+
+        // create button - highlight read
+        var button_highlight_yes = $('<li class="highlight-yes"></li>').html('<a>Highlight read: YES</a>');
+        drop_menu.on('click', 'li.highlight-yes', function () {
+            localStorage.setItem('highlightreadlocal', 'no');
+            $('li.work.blurb').css({
+                'background-color': '',
+                'border-left': '',
+                'margin-left': ''
+            });
+            button_highlight_yes.replaceWith(button_highlight_no);
+        });
+
+        // create button - don't highlight read
+        var button_highlight_no = $('<li class="highlight-no"></li>').html('<a>Highlight read: NO</a>');
+        drop_menu.on('click', 'li.highlight-no', function () {
+            localStorage.setItem('highlightreadlocal', 'yes');
+            if (readWorksExtracted) {
+                highlightReadWorks();
+            }
+            button_highlight_no.replaceWith(button_highlight_yes);
+        });
+
+        // create button - refresh read works
+        var button_refresh = $('<li class="refresh-reads"></li>').html('<a style="color: ' + ao3_accent + ';">🔄 Refresh read works</a>');
+        drop_menu.on('click', 'li.refresh-reads', function () {
+            readWorksSet.clear();
+            localStorage.removeItem('ao3_read_works');
+            alert('Please navigate to your AO3 Reading History page to refresh the list of read works. The script will automatically extract them.');
+        });
+
+        // create button - sync full history
+        var button_sync_full = $('<li class="full-history-sync"></li>').html('<a style="color: ' + ao3_accent + '; font-weight: bold;">🔄 Sync Full History</a>');
+        drop_menu.on('click', 'li.full-history-sync', function () {
+            syncFullHistory(button_sync_full);
+        });
+
+        // append buttons to the dropdown menu
+        drop_menu.append(button_count);
+
+        if (sortable) {
+            drop_menu.append(button_sort);
+            drop_menu.append(button_sort_rating);
+        }
+
+        if (typeof (Storage) !== 'undefined') {
+
+            drop_menu.append(button_settings);
+
+            if (always_count) {
+                drop_menu.append(button_count_yes);
+            }
+            else {
+                drop_menu.append(button_count_no);
+            }
+
+            if (always_sort) {
+                drop_menu.append(button_sort_yes);
+            }
+            else {
+                drop_menu.append(button_sort_no);
+            }
+
+            if (hide_hitcount) {
+                drop_menu.append(button_hide_yes);
+            }
+            else {
+                drop_menu.append(button_hide_no);
+            }
+
+            if (highlight_read) {
+                drop_menu.append(button_highlight_yes);
+            }
+            else {
+                drop_menu.append(button_highlight_no);
+            }
+
+            drop_menu.append(button_refresh);
+            drop_menu.append(button_sync_full);
+        }
+
+        // add button for statistics
+        if ($('#main').is('.stats-index')) {
+
+            var button_sort_stats = $('<li></li>').html('<a>↓&nbsp;Kudos/hits</a>');
+            button_sort_stats.click(function () {
+                sortByRatio();
+                button_sort_stats.after(button_sort_stats_asc).detach();
+            });
+
+            var button_sort_stats_asc = $('<li></li>').html('<a>↑&nbsp;Kudos/hits</a>');
+            button_sort_stats_asc.click(function () {
+                sortByRatio(true);
+                button_sort_stats_asc.after(button_sort_stats).detach();
+            });
+
             $('ul.sorting.actions li:nth-child(3)').after(button_sort_stats);
-        }
-    }
+        }
+    }
 
 
-    // If on history page, save the URL for background syncs
-    function checkAndStoreHistoryUrl() {
-        var currentUrl = window.location.href;
-        if (currentUrl.indexOf('/users/') !== -1 && currentUrl.indexOf('/readings') !== -1) {
-            var historyUrl = currentUrl.split('?')[0]; // Remove page parameter
-            GM_setValue('ao3_history_url', historyUrl);
-            
-            // Also scrape the current page while we're here
-            var foundIds = scrapeWorkIdsFromHTML($(document));
-            foundIds.forEach(id => readWorksSet.add(id));
-            GM_setValue('ao3_read_works', JSON.stringify([...readWorksSet]));
-        }
-    }
+    // Extract read works from AO3 history
+    function extractReadWorks() {
+        // Check if we're on a history page or if we need to navigate there
+        var currentUrl = window.location.href;
+        
+        // If on history page, extract works and save URL
+        if (currentUrl.indexOf('/users/') !== -1 && currentUrl.indexOf('/readings') !== -1) {
+            // Store the history URL for future background syncs
+            var historyUrl = currentUrl.split('?')[0]; // Remove page parameter
+            localStorage.setItem('ao3_history_url', historyUrl);
+            
+            extractFromCurrentPage();
+            readWorksExtracted = true;
+        } else if (currentUrl.indexOf('/users/') !== -1 && currentUrl.indexOf('/works') !== -1) {
+            extractFromCurrentPage();
+            readWorksExtracted = true;
+        } else {
+            // Try to get history from localStorage if previously extracted
+            var storedReadWorks = localStorage.getItem('ao3_read_works');
+            if (storedReadWorks) {
+                try {
+                    var workIds = JSON.parse(storedReadWorks);
+                    readWorksSet = new Set(workIds);
+                    readWorksExtracted = true;
+                } catch (e) {
+                    console.log('Failed to parse stored read works');
+                }
+            }
+            
+            // Load work metadata (ratings, last read info)
+            var storedMetadata = localStorage.getItem('ao3_work_metadata');
+            if (storedMetadata) {
+                try {
+                    workMetadata = JSON.parse(storedMetadata);
+                } catch (e) {
+                    console.log('Failed to parse stored work metadata');
+                }
+            }
+        }
+    }
 
-    // *** BUG FIX ***
-    // This function now *only* scrapes the main title links
-    function scrapeWorkIdsFromHTML(htmlToScrape) {
-        var workIds = new Set();
-        var $html = $(htmlToScrape);
-        
-        // This is the specific, correct selector
-        $html.find('li.work h4.heading a, li.bookmark h4.heading a').each(function() {
-            var workLink = $(this).attr('href');
-            if (workLink && workLink.indexOf('/works/') !== -1) {
-                var workId = workLink.match(/\/works\/(\d+)/);
-                if (workId && workId[1]) {
-                    workIds.add(workId[1]);
-                }
-            }
-        });
-        return workIds;
-    }
+    // Scrape work IDs from HTML string
+    function scrapeWorkIdsFromHTML(htmlToScrape) {
+        var workIds = new Set();
+        var $html = $(htmlToScrape);
+        
+        // Find all links that point to /works/
+        $html.find('a[href*="/works/"]').each(function() {
+            var workLink = $(this).attr('href');
+            if (workLink && workLink.indexOf('/works/') !== -1) {
+                var workId = workLink.match(/\/works\/(\d+)/);
+                if (workId && workId[1]) {
+                    workIds.add(workId[1]);
+                }
+            }
+        });
+        
+        return workIds;
+    }
 
+    // Extract work IDs from current page
+    function extractFromCurrentPage() {
+        var foundIds = scrapeWorkIdsFromHTML($(document));
+        
+        // Add found IDs to global readWorksSet
+        foundIds.forEach(function(id) {
+            readWorksSet.add(id);
+        });
 
-    // Helper function to fetch a page using GM_xmlhttpRequest
-    function fetchPage(url) {
-        return new Promise((resolve, reject) => {
-            GM_xmlhttpRequest({
-                method: "GET",
-                url: url,
-                onload: function(response) {
-                    if (response.status >= 200 && response.status < 400) {
-                        resolve(response.responseText);
-                    } else {
-                        reject(new Error('Failed to fetch page: ' + response.status));
-                    }
-                },
-                onerror: function(error) {
-                    reject(new Error('Network error: ' + error));
-                }
-            });
-        });
-    }
+        // Save to localStorage
+        if (readWorksSet.size > 0) {
+            localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+        }
+    }
 
+    // Sync full history by fetching all pages
+    async function syncFullHistory(buttonElement) {
+        try {
+            // Find the user's history URL
+            var historyLink = $('a[href^="/users/"][href*="/readings"]').first();
+            if (historyLink.length === 0) {
+                // Try alternative selector
+                historyLink = $('a[href*="/readings"]').first();
+            }
+            
+            if (historyLink.length === 0) {
+                alert('Could not find your history URL. Please navigate to your history page once and try again.');
+                return;
+            }
+            
+            var baseUrl = historyLink.attr('href');
+            if (!baseUrl) {
+                alert('Could not find your history URL. Please navigate to your history page once and try again.');
+                return;
+            }
+            
+            // Make sure URL is absolute
+            if (baseUrl.indexOf('http') !== 0) {
+                baseUrl = window.location.origin + baseUrl;
+            }
+            
+            // Fetch the first page to get total page count
+            buttonElement.find('a').text('Syncing... Fetching page 1...');
+            
+            var firstPageResponse = await fetch(baseUrl);
+            if (!firstPageResponse.ok) {
+                throw new Error('Failed to fetch history page: ' + firstPageResponse.status);
+            }
+            
+            var firstPageHTML = await firstPageResponse.text();
+            var $firstPage = $(firstPageHTML);
+            
+            // Extract work IDs from first page
+            var firstPageIds = scrapeWorkIdsFromHTML(firstPageHTML);
+            firstPageIds.forEach(function(id) {
+                readWorksSet.add(id);
+            });
+            
+            // Find total number of pages from pagination
+            var totalPages = 1;
+            var $pagination = $firstPage.find('ol.pagination');
+            if ($pagination.length > 0) {
+                var $lastPageLink = $pagination.find('li:last-child a');
+                if ($lastPageLink.length > 0) {
+                    var lastPageText = $lastPageLink.text().trim();
+                    var pageMatch = lastPageText.match(/(\d+)/);
+                    if (pageMatch && pageMatch[1]) {
+                        totalPages = parseInt(pageMatch[1]);
+                    }
+                }
+            }
+            
+            // Alert user about the sync process
+            alert('Starting full history sync for ' + totalPages + ' pages. This will take several minutes. Please leave this tab open.');
+            
+            // Loop through all pages
+            for (var page = 2; page <= totalPages; page++) {
+                // Throttle: wait 1.5 seconds between requests
+                await new Promise(function(resolve) {
+                    setTimeout(resolve, 1500);
+                });
+                
+                // Update button text with progress
+                buttonElement.find('a').text('Syncing page ' + page + '/' + totalPages + '...');
+                
+                // Construct page URL
+                var pageUrl = baseUrl;
+                if (pageUrl.indexOf('?') !== -1) {
+                    pageUrl = pageUrl.replace(/\?.*$/, '') + '?page=' + page;
+                } else {
+                    pageUrl = pageUrl + '?page=' + page;
+                }
+                
+                try {
+                    // Fetch the page
+                    var pageResponse = await fetch(pageUrl);
+                    if (!pageResponse.ok) {
+                        console.warn('Failed to fetch page ' + page + ': ' + pageResponse.status);
+                        continue; // Skip this page but continue with others
+                    }
+                    
+                    var pageHTML = await pageResponse.text();
+                    
+                    // Extract work IDs from this page
+                    var pageIds = scrapeWorkIdsFromHTML(pageHTML);
+                    pageIds.forEach(function(id) {
+                        readWorksSet.add(id);
+                    });
+                    
+                } catch (error) {
+                    console.warn('Error fetching page ' + page + ':', error);
+                    // Continue with next page even if one fails
+                }
+            }
+            
+            // Save complete set to localStorage
+            localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+            
+            // Reset button text and show completion message
+            buttonElement.find('a').text('🔄 Sync Full History');
+            alert('Full history sync complete! ' + readWorksSet.size + ' works have been saved. Please refresh the page to see highlights.');
+            
+            // Refresh highlights if enabled
+            if (highlight_read) {
+                readWorksExtracted = true;
+                highlightReadWorks();
+            }
+            
+        } catch (error) {
+            console.error('Error during full history sync:', error);
+            buttonElement.find('a').text('🔄 Sync Full History');
+            alert('Error during sync: ' + error.message + '. Some works may have been saved. Please try again.');
+        }
+    }
 
-    // Sync full history by fetching all pages
-    async function syncFullHistory(buttonElement) {
-        try {
-            var baseUrl = await GM_getValue('ao3_history_url');
-            
-            if (!baseUrl) {
-                 // Try to find it on the page if not in storage
-                var historyLink = $('a[href^="/users/"][href*="/readings"]').first();
-                if (historyLink.length > 0) {
-                    baseUrl = historyLink.attr('href').split('?')[0];
-                    if (baseUrl.indexOf('http') !== 0) {
-                        baseUrl = window.location.origin + baseUrl;
-                    }
-                    await GM_setValue('ao3_history_url', baseUrl);
-                } else {
-                    alert('Could not find your history URL. Please navigate to your AO3 "My History" page once to teach the script where it is, then try again.');
-                    return;
-                }
-            }
-            
-            if (baseUrl.indexOf('http') !== 0) {
-                baseUrl = window.location.origin + baseUrl;
-            }
+    // Highlight works that have been read (only on search pages)
+    function highlightReadWorks() {
+        var currentUrl = window.location.href;
+        
+        // Skip if on user pages (readings, bookmarks, works, etc)
+        if (currentUrl.indexOf('/users/') !== -1) {
+            return;
+        }
+        
+        // Skip if on individual work pages
+        if (currentUrl.match(/\/works\/\d+$/) || currentUrl.match(/\/works\/\d+\?/)) {
+            return;
+        }
+        
+        $('li.work.blurb, li.bookmark').each(function() {
+            var $work = $(this);
+            // Only look at the main heading link for the work, not all links
+            var workLink = $work.find('h4.heading a').first().attr('href');
+            
+            if (workLink && workLink.indexOf('/works/') !== -1) {
+                var workId = workLink.match(/\/works\/(\d+)/);
+                if (workId && workId[1] && readWorksSet.has(workId[1])) {
+                    $work.css('background-color', read_highlight_color);
+                    $work.css('border-left', '3px solid ' + ao3_accent);
+                    $work.css('margin-left', '-3px');
+                    $work.css('padding-left', '8px');
+                }
+            }
+        });
+    }
 
-            buttonElement.find('a').text('Syncing... Fetching page 1...');
-            
-            var firstPageHTML = await fetchPage(baseUrl);
-            var $firstPage = $(firstPageHTML);
-            
-            var firstPageIds = scrapeWorkIdsFromHTML(firstPageHTML);
-            firstPageIds.forEach(id => readWorksSet.add(id));
-            
-            var totalPages = 1;
-            var $pagination = $firstPage.find('ol.pagination');
-            if ($pagination.length > 0) {
-                var $lastPageLink = $pagination.find('li:last-child a');
-                if ($lastPageLink.length > 0) {
-                    var lastPageText = $lastPageLink.text().trim();
-                    var pageMatch = lastPageText.match(/(\d+)/);
-                    if (pageMatch && pageMatch[1]) {
-                        totalPages = parseInt(pageMatch[1]);
-                    }
-                }
-            }
-            
-            alert('Starting full history sync for ' + totalPages + ' pages. This will take several minutes. Please leave this tab open.');
-            
-            for (var page = 2; page <= totalPages; page++) {
-                await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second throttle
-                
-                buttonElement.find('a').text('Syncing page ' + page + '/' + totalPages + '...');
-                var pageUrl = baseUrl + '?page=' + page;
-                
-                try {
-                    var pageHTML = await fetchPage(pageUrl);
-                    var pageIds = scrapeWorkIdsFromHTML(pageHTML);
-                    pageIds.forEach(id => readWorksSet.add(id));
-                    
-                } catch (error) {
-                    console.warn('Error fetching page ' + page + ':', error);
-                }
-            }
-            
-            await GM_setValue('ao3_read_works', JSON.stringify([...readWorksSet]));
-            
-            buttonElement.find('a').text('🔄 Sync Full History');
-            alert('Full history sync complete! ' + readWorksSet.size + ' works have been saved. Please refresh the page to see highlights.');
-            
-            readWorksExtracted = true;
-            highlightReadWorks();
-            
-        } catch (error) {
-            console.error('Error during full history sync:', error);
-            buttonElement.find('a').text('🔄 Sync Full History');
-            alert('Error during sync: ' + error.message + '. Some works may have been saved. Please try again.');
-        }
-    }
+    // Display ratings and update information
+    function displayRatingsAndUpdates() {
+        $('li.work.blurb, li.bookmark').each(function() {
+            var $work = $(this);
+            var workLink = $work.find('h4.heading a').first().attr('href');
+            
+            if (workLink && workLink.indexOf('/works/') !== -1) {
+                var workId = workLink.match(/\/works\/(\d+)/);
+                if (workId && workId[1]) {
+                    var workIdNum = workId[1];
+                    var metadata = workMetadata[workIdNum] || {};
+                    
+                    // Check if this work is in read history
+                    var isRead = readWorksSet.has(workIdNum);
+                    
+                    // Get current work stats
+                    var $stats = $work.find('dl.stats');
+                    var $chapters = $work.find('dd.chapters');
+                    
+                    // Parse chapter count from text (e.g., "42" or "42/42")
+                    var chapterText = $chapters.text().trim();
+                    var currentChapters = 0;
+                    var totalChapters = 0;
+                    
+                    if (chapterText) {
+                        var chapterMatch = chapterText.match(/(\d+)/);
+                        if (chapterMatch) {
+                            currentChapters = parseInt(chapterMatch[1]);
+                        }
+                        
+                        var totalMatch = chapterText.match(/\/(\d+)/);
+                        if (totalMatch) {
+                            totalChapters = parseInt(totalMatch[1]);
+                        } else {
+                            totalChapters = currentChapters;
+                        }
+                    }
+                    
+                    // Get update date
+                    var $updateDate = $work.find('.datetime');
+                    var updateDateStr = $updateDate.attr('title') || $updateDate.text();
+                    var updateDate = parseDate(updateDateStr);
+                    
+                    // Create rating display
+                    var $ratingContainer = $work.find('.custom-rating-container');
+                    if ($ratingContainer.length === 0) {
+                        $ratingContainer = $('<div class="custom-rating-container"></div>');
+                        $stats.prepend($ratingContainer);
+                    }
+                    
+                    var ratingText = metadata.rating !== undefined ? metadata.rating + '/9' : 'Not rated';
+                    var ratingColor = metadata.rating !== undefined ? getRatingColor(metadata.rating) : ao3_secondary;
+                    $ratingContainer.html(
+                        '<dt>Rating:</dt>' +
+                        '<dd><span class="custom-rating" data-work-id="' + workIdNum + '" style="cursor:pointer; font-weight:bold; color:' + ratingColor + ';" title="Click to rate">' + ratingText + '</span></dd>'
+                    );
+                    
+                    // Add click handler for rating
+                    $ratingContainer.find('.custom-rating').off('click').on('click', function(e) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        promptRating(workIdNum);
+                    });
+                    
+                    // Display last read info for highlighted works
+                    if (isRead && highlight_read) {
+                        var $readInfoContainer = $work.find('.custom-read-info-container');
+                        if ($readInfoContainer.length === 0) {
+                            $readInfoContainer = $('<div class="custom-read-info-container"></div>');
+                            $stats.prepend($readInfoContainer);
+                        }
+                        
+                        var readInfoHTML = '';
+                        
+                        // Display last read date if available
+                        if (metadata.lastReadDate) {
+                            var lastReadDate = parseDate(metadata.lastReadDate);
+                            if (lastReadDate) {
+                                var formattedDate = formatReadableDate(lastReadDate);
+                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Last read:</dt>';
+                                readInfoHTML += '<dd style="color:' + ao3_secondary + ';">' + formattedDate + '</dd>';
+                            }
+                        }
+                        
+                        // Display chapters remaining if we have progress info
+                        if (metadata.lastReadChapters !== undefined && totalChapters > 0) {
+                            var chaptersRead = metadata.lastReadChapters;
+                            var chaptersRemaining = totalChapters - chaptersRead;
+                            
+                            if (chaptersRemaining > 0) {
+                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Chapters left:</dt>';
+                                readInfoHTML += '<dd style="color:' + ao3_secondary + ';">' + chaptersRemaining + ' / ' + totalChapters + '</dd>';
+                            } else if (chaptersRead >= totalChapters) {
+                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Status:</dt>';
+                                readInfoHTML += '<dd style="color:green;">Complete</dd>';
+                            }
+                        }
+                        
+                        $readInfoContainer.html(readInfoHTML);
+                    }
+                    
+                    // Check for updates
+                    if (metadata.lastReadDate && metadata.lastReadChapters !== undefined && updateDate) {
+                        var lastReadDate = parseDate(metadata.lastReadDate);
+                        
+                        // Check if work has been updated since last read
+                        if (updateDate > lastReadDate) {
+                            var unreadChapters = currentChapters - metadata.lastReadChapters;
+                            var $updateContainer = $work.find('.custom-update-container');
+                            if ($updateContainer.length === 0) {
+                                $updateContainer = $('<div class="custom-update-container"></div>');
+                                $stats.prepend($updateContainer);
+                            }
+                            
+                            var updateMessage = '<dt style="font-weight:bold; color:' + ao3_accent + ';">⚠ Updated:</dt>';
+                            if (unreadChapters > 0) {
+                                updateMessage += '<dd style="color:' + ao3_accent + '; font-weight:bold;">+' + unreadChapters + ' new chapter' + (unreadChapters > 1 ? 's' : '') + '</dd>';
+                            } else {
+                                updateMessage += '<dd style="color:' + ao3_accent + '; font-weight:bold;">New update</dd>';
+                            }
+                            $updateContainer.html(updateMessage);
+                        }
+                    }
+                }
+            }
+        });
+    }
+    
+    // Set up click tracking for works to record when they're read
+    function setupWorkClickTracking() {
+        // Track clicks on work links on search/browse pages
+        $(document).on('click', 'li.work.blurb h4.heading a, li.bookmark h4.heading a', function(e) {
+            var $link = $(this);
+            var workLink = $link.attr('href');
+            
+            if (workLink && workLink.indexOf('/works/') !== -1) {
+                var workId = workLink.match(/\/works\/(\d+)/);
+                if (workId && workId[1]) {
+                    var workIdNum = workId[1];
+                    var $work = $link.closest('li.work.blurb, li.bookmark');
+                    
+                    // Get current chapter info
+                    var $chapters = $work.find('dd.chapters');
+                    var chapterText = $chapters.text().trim();
+                    var currentChapters = 0;
+                    var totalChapters = 0;
+                    
+                    if (chapterText) {
+                        var chapterMatch = chapterText.match(/(\d+)/);
+                        if (chapterMatch) {
+                            currentChapters = parseInt(chapterMatch[1]);
+                        }
+                        
+                        var totalMatch = chapterText.match(/\/(\d+)/);
+                        if (totalMatch) {
+                            totalChapters = parseInt(totalMatch[1]);
+                        } else {
+                            totalChapters = currentChapters;
+                        }
+                    }
+                    
+                    // Update metadata with current date and chapter count
+                    if (!workMetadata[workIdNum]) {
+                        workMetadata[workIdNum] = {};
+                    }
+                    workMetadata[workIdNum].lastReadDate = new Date().toISOString();
+                    workMetadata[workIdNum].lastReadChapters = currentChapters;
+                    
+                    // Save metadata
+                    saveMetadata();
+                }
+            }
+        });
+    }
 
-    // Highlight works that have been read (only on search pages)
-    function highlightReadWorks() {
-        var currentUrl = window.location.href;
-        if (currentUrl.indexOf('/users/') !== -1) {
-            return; // Skip on user pages
-        }
-        if (currentUrl.match(/\/works\/\d+/)) {
-             return; // Skip on individual work pages
-        }
-        
-        $('li.work.blurb, li.bookmark').each(function() {
-            var $work = $(this);
-            var workLink = $work.find('h4.heading a').first().attr('href');
-            
-            if (workLink && workLink.indexOf('/works/') !== -1) {
-                var workId = workLink.match(/\/works\/(\d+)/);
-                if (workId && workId[1] && readWorksSet.has(workId[1])) {
-                    $work.css('background-color', read_highlight_color);
-                    $work.css('border-left', '3px solid ' + ao3_accent);
-                    $work.css('margin-left', '-3px');
-                    $work.css('padding-left', '8px');
-                }
-            }
-        });
-    }
+    // Get color for rating based on score
+    function getRatingColor(rating) {
+        if (rating >= 8) return '#5cb85c'; // green for excellent
+        if (rating >= 6) return '#5bc0de'; // light blue for good
+        if (rating >= 4) return '#f0ad4e'; // orange for fair
+        if (rating >= 2) return '#d9534f'; // red for poor
+        return '#999999'; // gray for very poor
+    }
 
-    // Display ratings and update information
-    function displayRatingsAndUpdates() {
-        $('li.work.blurb, li.bookmark').each(function() {
-            var $work = $(this);
-            var workLink = $work.find('h4.heading a').first().attr('href');
-            
-            if (workLink && workLink.indexOf('/works/') !== -1) {
-                var workId = workLink.match(/\/works\/(\d+)/);
-                if (workId && workId[1]) {
-                    var workIdNum = workId[1];
-                    var metadata = workMetadata[workIdNum] || {};
-                    var isRead = readWorksSet.has(workIdNum);
-                    var $stats = $work.find('dl.stats');
-                    var $chapters = $work.find('dd.chapters');
-                    var chapterText = $chapters.text().trim();
-                    var currentChapters = 0;
-                    var totalChapters = 0;
-                    
-                    if (chapterText) {
-                        var chapterMatch = chapterText.match(/(\d+)/);
-                        if (chapterMatch) {
-                            currentChapters = parseInt(chapterMatch[1]);
-                        }
-                        var totalMatch = chapterText.match(/\/(\d+)/);
-                        if (totalMatch) {
-                            totalChapters = parseInt(totalMatch[1]);
-                        } else {
-                            totalChapters = currentChapters;
-                        }
-                    }
-                    
-                    var $updateDate = $work.find('.datetime');
-                    var updateDateStr = $updateDate.attr('title') || $updateDate.text();
-                    var updateDate = parseDate(updateDateStr);
-                    
-                    var $ratingContainer = $work.find('.custom-rating-container');
-                    if ($ratingContainer.length === 0) {
-                        $ratingContainer = $('<div class="custom-rating-container"></div>');
-                        $stats.prepend($ratingContainer);
-                    }
-                    
-                    var ratingText = metadata.rating !== undefined ? metadata.rating + '/9' : 'Not rated';
-                    var ratingColor = metadata.rating !== undefined ? getRatingColor(metadata.rating) : ao3_secondary;
-                    $ratingContainer.html(
-                        '<dt>Rating:</dt>' +
-                        '<dd><span class="custom-rating" data-work-id="' + workIdNum + '" style="cursor:pointer; font-weight:bold; color:' + ratingColor + ';" title="Click to rate">' + ratingText + '</span></dd>'
-                    );
-                    
-                    $ratingContainer.find('.custom-rating').off('click').on('click', function(e) {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        promptRating(workIdNum);
-                    });
-                    
-                    if (isRead && highlight_read) {
-                        var $readInfoContainer = $work.find('.custom-read-info-container');
-                        if ($readInfoContainer.length === 0) {
-                            $readInfoContainer = $('<div class="custom-read-info-container"></div>');
-                            $stats.prepend($readInfoContainer);
-                        }
-                        
-                        var readInfoHTML = '';
-                        if (metadata.lastReadDate) {
-                            var lastReadDate = parseDate(metadata.lastReadDate);
-                            if (lastReadDate) {
-                                var formattedDate = formatReadableDate(lastReadDate);
-                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Last read:</dt>';
-                                readInfoHTML += '<dd style="color:' + ao3_secondary + ';">' + formattedDate + '</dd>';
-                            }
-                        }
-                        
-                        if (metadata.lastReadChapters !== undefined && totalChapters > 0) {
-                            var chaptersRead = metadata.lastReadChapters;
-                            var chaptersRemaining = totalChapters - chaptersRead;
-                            
-                            if (chaptersRemaining > 0) {
-                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Chapters left:</dt>';
-                                readInfoHTML += '<dd style="color:' + ao3_secondary + ';">' + chaptersRemaining + ' / ' + totalChapters + '</dd>';
-                            } else if (chaptersRead >= totalChapters) {
-                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Status:</dt>';
-                                readInfoHTML += '<dd style="color:green;">Complete</dd>';
-                            }
-                        }
-                        $readInfoContainer.html(readInfoHTML);
-                    }
-                    
-                    if (metadata.lastReadDate && metadata.lastReadChapters !== undefined && updateDate) {
-                        var lastReadDate = parseDate(metadata.lastReadDate);
-                        
-                        if (updateDate > lastReadDate) {
-                            var unreadChapters = currentChapters - metadata.lastReadChapters;
-                            var $updateContainer = $work.find('.custom-update-container');
-                            if ($updateContainer.length === 0) {
-                                $updateContainer = $('<div class="custom-update-container"></div>');
-                                $stats.prepend($updateContainer);
-                            }
-                            
-                            var updateMessage = '<dt style="font-weight:bold; color:' + ao3_accent + ';">⚠ Updated:</dt>';
-                            if (unreadChapters > 0) {
-                                updateMessage += '<dd style="color:' + ao3_accent + '; font-weight:bold;">+' + unreadChapters + ' new chapter' + (unreadChapters > 1 ? 's' : '') + '</dd>';
-                            } else {
-                                updateMessage += '<dd style="color:' + ao3_accent + '; font-weight:bold;">New update</dd>';
-                            }
-                            $updateContainer.html(updateMessage);
-                        }
-                    }
-                }
-            }
-        });
-    }
-    
-    // This is the function that automatically updates your read history!
-    function setupWorkClickTracking() {
-        $(document).on('click', 'li.work.blurb h4.heading a, li.bookmark h4.heading a', function(e) {
-            var $link = $(this);
-            var workLink = $link.attr('href');
-            
-            if (workLink && workLink.indexOf('/works/') !== -1) {
-                var workId = workLink.match(/\/works\/(\d+)/);
-                if (workId && workId[1]) {
-                    var workIdNum = workId[1];
-                    var $work = $link.closest('li.work.blurb, li.bookmark');
-                    var $chapters = $work.find('dd.chapters');
-                    var chapterText = $chapters.text().trim();
-                    var currentChapters = 0;
-                    
-                    if (chapterText) {
-                        var chapterMatch = chapterText.match(/(\d+)/);
-                        if (chapterMatch) {
-                            currentChapters = parseInt(chapterMatch[1]);
-                        }
-                    }
-                    
-                    if (!workMetadata[workIdNum]) {
-                        workMetadata[workIdNum] = {};
-                    }
-                    workMetadata[workIdNum].lastReadDate = new Date().toISOString();
-                    workMetadata[workIdNum].lastReadChapters = currentChapters;
-                    
-                    // Also add to read set immediately
-                    if (!readWorksSet.has(workIdNum)) {
-                         readWorksSet.add(workIdNum);
-                         GM_setValue('ao3_read_works', JSON.stringify([...readWorksSet]));
-                    }
-                   
-                    saveMetadata();
-                }
-            }
-        });
-    }
+    // Parse date from various AO3 formats
+    function parseDate(dateStr) {
+        if (!dateStr) return null;
+        
+        // Try different date formats
+        var date = new Date(dateStr);
+        if (!isNaN(date.getTime())) {
+            return date;
+        }
+        
+        // Handle "Last updated: January 15, 2025" format
+        dateStr = dateStr.replace(/Last updated:\s*/i, '');
+        date = new Date(dateStr);
+        if (!isNaN(date.getTime())) {
+            return date;
+        }
+        
+        return null;
+    }
+    
+    // Format date in a readable relative format
+    function formatReadableDate(date) {
+        if (!date) return 'Unknown';
+        
+        var now = new Date();
+        var diffMs = now.getTime() - date.getTime();
+        var diffSecs = Math.floor(diffMs / 1000);
+        var diffMins = Math.floor(diffSecs / 60);
+        var diffHours = Math.floor(diffMins / 60);
+        var diffDays = Math.floor(diffHours / 24);
+        var diffWeeks = Math.floor(diffDays / 7);
+        var diffMonths = Math.floor(diffDays / 30);
+        var diffYears = Math.floor(diffDays / 365);
+        
+        if (diffSecs < 60) {
+            return 'Just now';
+        } else if (diffMins < 60) {
+            return diffMins + ' minute' + (diffMins > 1 ? 's' : '') + ' ago';
+        } else if (diffHours < 24) {
+            return diffHours + ' hour' + (diffHours > 1 ? 's' : '') + ' ago';
+        } else if (diffDays < 7) {
+            return diffDays + ' day' + (diffDays > 1 ? 's' : '') + ' ago';
+        } else if (diffWeeks < 4) {
+            return diffWeeks + ' week' + (diffWeeks > 1 ? 's' : '') + ' ago';
+        } else if (diffMonths < 12) {
+            return diffMonths + ' month' + (diffMonths > 1 ? 's' : '') + ' ago';
+        } else if (diffYears < 2) {
+            return diffYears + ' year ago';
+        } else {
+            // For older dates, show actual date
+            var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            return months[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear();
+        }
+    }
 
-    function getRatingColor(rating) {
-        if (rating >= 8) return '#5cb85c';
-        if (rating >= 6) return '#5bc0de';
-        if (rating >= 4) return '#f0ad4e';
-        if (rating >= 2) return '#d9534f';
-        return '#999999';
-    }
+    // Save metadata to localStorage
+    function saveMetadata() {
+        localStorage.setItem('ao3_work_metadata', JSON.stringify(workMetadata));
+    }
 
-    function parseDate(dateStr) {
-        if (!dateStr) return null;
-        
-        // Handle "Last updated: January 15, 2025" format
-        dateStr = dateStr.replace(/Last updated:\s*/i, '');
+    // Prompt user for rating
+    function promptRating(workId) {
+        var currentRating = workMetadata[workId] ? workMetadata[workId].rating : '';
+        var rating = prompt('Rate this work (0-9):\n\n0 = Worst\n9 = Best', currentRating);
+        
+        if (rating !== null) {
+            rating = parseInt(rating);
+            if (!isNaN(rating) && rating >= 0 && rating <= 9) {
+                setRating(workId, rating);
+            } else if (rating !== '' && rating !== currentRating) {
+                alert('Please enter a number between 0 and 9');
+            }
+        }
+    }
 
-        // Handle "31 Dec 2024" format
-        var match = dateStr.match(/(\d{1,2})\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s(\d{4})/);
-        if (match) {
-            return new Date(match[2] + ' ' + match[1] + ', ' + match[3]);
-        }
-        
-        // Handle "YYYY-MM-DD" format
-        match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
-        if (match) {
-            return new Date(dateStr);
-        }
+    // Set rating for a work
+    function setRating(workId, rating) {
+        if (!workMetadata[workId]) {
+            workMetadata[workId] = {};
+        }
+        workMetadata[workId].rating = rating;
+        saveMetadata();
+        displayRatingsAndUpdates();
+    }
 
-        // Try standard parsing as a fallback
-        var date = new Date(dateStr);
-        if (!isNaN(date.getTime())) {
-            return date;
-        }
-        
-        return null;
-    }
-    
-    function formatReadableDate(date) {
-        if (!date) return 'Unknown';
-        var now = new Date();
-        var diffMs = now.getTime() - date.getTime();
-        var diffSecs = Math.floor(diffMs / 1000);
-        var diffMins = Math.floor(diffSecs / 60);
-        var diffHours = Math.floor(diffMins / 60);
-        var diffDays = Math.floor(diffHours / 24);
-        var diffWeeks = Math.floor(diffDays / 7);
-        var diffMonths = Math.floor(diffDays / 30);
-        var diffYears = Math.floor(diffDays / 365);
-        
-        if (diffSecs < 60) { return 'Just now'; }
-        else if (diffMins < 60) { return diffMins + ' minute' + (diffMins > 1 ? 's' : '') + ' ago'; }
-        else if (diffHours < 24) { return diffHours + ' hour' + (diffHours > 1 ? 's' : '') + ' ago'; }
-        else if (diffDays < 7) { return diffDays + ' day' + (diffDays > 1 ? 's' : '') + ' ago'; }
-        else if (diffWeeks < 4) { return diffWeeks + ' week' + (diffWeeks > 1 ? 's' : '') + ' ago'; }
-        else if (diffMonths < 12) { return diffMonths + ' month' + (diffMonths > 1 ? 's' : '') + ' ago'; }
-        else if (diffYears < 2) { return diffYears + ' year ago'; }
-        else {
-            var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-            return months[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear();
-        }
-    }
+    // Start automatic background sync
+    function startAutoSync() {
+        // Only run on AO3
+        if (window.location.hostname.indexOf('archiveofourown.org') === -1) {
+            return;
+        }
+        
+        // Check if we should extract from current page
+        if (window.location.href.indexOf('/users/') !== -1 && 
+            (window.location.href.indexOf('/readings') !== -1 || 
+             window.location.href.indexOf('/works') !== -1)) {
+            extractFromCurrentPage();
+            readWorksExtracted = true;
+            
+            // If we're on a readings page, start background sync
+            if (window.location.href.indexOf('/readings') !== -1 && !syncInProgress) {
+                backgroundExtractHistory();
+            }
+        }
+        
+        // Set up periodic check for new works on any AO3 page
+        if (syncCheckInterval === null) {
+            syncCheckInterval = setInterval(function() {
+                if (!syncInProgress && window.location.hostname.indexOf('archiveofourown.org') !== -1) {
+                    // Check if we're on a page that might have works we haven't synced
+                    checkAndExtractNewWorks();
+                }
+            }, 5000); // Check every 5 seconds
+            
+            // Check for history sync once after a delay
+            setTimeout(function() {
+                if (!syncInProgress && window.location.hostname.indexOf('archiveofourown.org') !== -1) {
+                    checkAndStartHistorySync();
+                }
+            }, 10000); // Wait 10 seconds before first check
+        }
+    }
+    
+    // Check if we should navigate to history page to start background sync
+    function checkAndStartHistorySync() {
+        // Don't start if already syncing
+        if (syncInProgress) {
+            return;
+        }
+        
+        // Check if we already synced in this session
+        if (localStorage.getItem('ao3_sync_in_progress') === 'true') {
+            return;
+        }
+        
+        // Only check on main AO3 pages (not already on history page)
+        var currentUrl = window.location.href;
+        if (currentUrl.indexOf('/readings') === -1) {
+            // Check if we have a stored history URL
+            var storedHistoryUrl = localStorage.getItem('ao3_history_url');
+            if (storedHistoryUrl) {
+                // Check last sync time
+                var lastSync = localStorage.getItem('ao3_last_sync');
+                var shouldSync = true;
+                
+                if (lastSync) {
+                    var lastSyncTime = parseInt(lastSync);
+                    var now = Date.now();
+                    // Only sync if it's been more than 24 hours since last sync
+                    if (now - lastSyncTime < 24 * 60 * 60 * 1000) {
+                        shouldSync = false;
+                    }
+                }
+                
+                if (shouldSync) {
+                    console.log('Starting background history sync...');
+                    localStorage.setItem('ao3_sync_in_progress', 'true');
+                    // Navigate to history page in background to start sync
+                    fetch(storedHistoryUrl + '?page=1')
+                        .then(function(response) {
+                            if (response.ok) {
+                                return response.text();
+                            }
+                            throw new Error('Failed to fetch history page');
+                        })
+                        .then(function(html) {
+                            var $page = $(html);
+                            var ids = scrapeWorkIdsFromHTML(html);
+                            ids.forEach(function(id) {
+                                readWorksSet.add(id);
+                            });
+                            localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+                            
+                            // Find total pages
+                            var $pagination = $page.find('ol.pagination');
+                            var totalPages = 1;
+                            if ($pagination.length > 0) {
+                                var $lastPageLink = $pagination.find('li:last-child a');
+                                if ($lastPageLink.length > 0) {
+                                    var lastPageText = $lastPageLink.text().trim();
+                                    var pageMatch = lastPageText.match(/(\d+)/);
+                                    if (pageMatch && pageMatch[1]) {
+                                        totalPages = parseInt(pageMatch[1]);
+                                    }
+                                }
+                            }
+                            
+                            // Fetch remaining pages in background
+                            if (totalPages > 1) {
+                                syncRemainingPages(storedHistoryUrl, totalPages);
+                            } else {
+                                localStorage.setItem('ao3_last_sync', Date.now().toString());
+                                localStorage.removeItem('ao3_sync_in_progress');
+                            }
+                        })
+                        .catch(function(error) {
+                            console.error('Error fetching history:', error);
+                            localStorage.removeItem('ao3_sync_in_progress');
+                        });
+                }
+            }
+        }
+    }
+    
+    // Sync remaining pages in background
+    async function syncRemainingPages(baseUrl, totalPages) {
+        syncInProgress = true;
+        
+        try {
+            for (var page = 2; page <= totalPages; page++) {
+                // Throttle requests
+                await new Promise(function(resolve) {
+                    setTimeout(resolve, 1500);
+                });
+                
+                try {
+                    var pageUrl = baseUrl + '?page=' + page;
+                    var pageResponse = await fetch(pageUrl);
+                    
+                    if (pageResponse.ok) {
+                        var pageHTML = await pageResponse.text();
+                        var pageIds = scrapeWorkIdsFromHTML(pageHTML);
+                        pageIds.forEach(function(id) {
+                            readWorksSet.add(id);
+                        });
+                        localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+                        console.log('Synced page ' + page + '/' + totalPages + ' (' + readWorksSet.size + ' total works)');
+                    }
+                } catch (error) {
+                    console.warn('Error fetching page ' + page + ':', error);
+                }
+            }
+            
+            localStorage.setItem('ao3_last_sync', Date.now().toString());
+            localStorage.removeItem('ao3_sync_in_progress');
+            console.log('Background sync complete! Total works: ' + readWorksSet.size);
+            
+            if (highlight_read) {
+                highlightReadWorks();
+            }
+        } catch (error) {
+            console.error('Error during background sync:', error);
+            localStorage.removeItem('ao3_sync_in_progress');
+        } finally {
+            syncInProgress = false;
+        }
+    }
 
-    function saveMetadata() {
-        GM_setValue('ao3_work_metadata', JSON.stringify(workMetadata));
-    }
+    // Extract new works from the current page if they're not already in our set
+    function checkAndExtractNewWorks() {
+        var foundIds = scrapeWorkIdsFromHTML($(document));
+        var newIds = false;
+        
+        foundIds.forEach(function(id) {
+            if (!readWorksSet.has(id)) {
+                readWorksSet.add(id);
+                newIds = true;
+            }
+        });
+        
+        if (newIds) {
+            localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+            if (highlight_read && readWorksExtracted) {
+                highlightReadWorks();
+            }
+        }
+    }
 
-    function promptRating(workId) {
-        var currentRating = workMetadata[workId] ? workMetadata[workId].rating : '';
-        var rating = prompt('Rate this work (0-9):\n\n0 = Worst\n9 = Best', currentRating);
-        
-        if (rating !== null) {
-            rating = parseInt(rating);
-            if (!isNaN(rating) && rating >= 0 && rating <= 9) {
-                setRating(workId, rating);
-            } else if (rating !== '' && rating !== currentRating) {
-                alert('Please enter a number between 0 and 9');
-            }
-        }
-    }
-
-    function setRating(workId, rating) {
-        if (!workMetadata[workId]) {
-            workMetadata[workId] = {};
-        }
-        workMetadata[workId].rating = rating;
-        saveMetadata();
-        displayRatingsAndUpdates();
-    }
-   
-    // Removed the complex auto-sync functions as they are buggy
-    // The manual "Sync Full History" button is the reliable method.
-    // The `setupWorkClickTracking` function handles automatic updates when you read.
+    // Background extraction of full history
+    async function backgroundExtractHistory() {
+        if (syncInProgress) {
+            return;
+        }
+        
+        try {
+            syncInProgress = true;
+            localStorage.setItem('ao3_sync_in_progress', 'true');
+            
+            // Get current URL
+            var baseUrl = window.location.href;
+            
+            // Remove page parameter if exists
+            if (baseUrl.indexOf('?') !== -1) {
+                baseUrl = baseUrl.split('?')[0];
+            }
+            
+            // Extract from current page
+            extractFromCurrentPage();
+            
+            // Try to find total pages from pagination
+            var $pagination = $('ol.pagination');
+            var totalPages = 1;
+            
+            if ($pagination.length > 0) {
+                var $lastPageLink = $pagination.find('li:last-child a');
+                if ($lastPageLink.length > 0) {
+                    var lastPageText = $lastPageLink.text().trim();
+                    var pageMatch = lastPageText.match(/(\d+)/);
+                    if (pageMatch && pageMatch[1]) {
+                        totalPages = parseInt(pageMatch[1]);
+                    }
+                }
+            }
+            
+            // If there are multiple pages and we haven't synced recently, start background sync
+            if (totalPages > 1) {
+                var lastSync = localStorage.getItem('ao3_last_sync');
+                var shouldSync = true;
+                
+                if (lastSync) {
+                    var lastSyncTime = parseInt(lastSync);
+                    var now = Date.now();
+                    // Only sync if it's been more than 24 hours since last sync
+                    if (now - lastSyncTime < 24 * 60 * 60 * 1000) {
+                        shouldSync = false;
+                    }
+                }
+                
+                if (shouldSync) {
+                    console.log('Starting background sync of ' + totalPages + ' pages...');
+                    
+                    // Fetch other pages in background
+                    for (var page = 2; page <= totalPages; page++) {
+                        // Throttle requests to be polite to AO3 servers
+                        await new Promise(function(resolve) {
+                            setTimeout(resolve, 1500); // Wait 1.5 seconds between requests
+                        });
+                        
+                        try {
+                            var pageUrl = baseUrl + '?page=' + page;
+                            var pageResponse = await fetch(pageUrl);
+                            
+                            if (pageResponse.ok) {
+                                var pageHTML = await pageResponse.text();
+                                var pageIds = scrapeWorkIdsFromHTML(pageHTML);
+                                pageIds.forEach(function(id) {
+                                    readWorksSet.add(id);
+                                });
+                                localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+                                console.log('Synced page ' + page + '/' + totalPages + ' (' + readWorksSet.size + ' total works)');
+                            }
+                        } catch (error) {
+                            console.warn('Error fetching page ' + page + ':', error);
+                        }
+                    }
+                    
+                    localStorage.setItem('ao3_last_sync', Date.now().toString());
+                    localStorage.removeItem('ao3_sync_in_progress');
+                    console.log('Background sync complete! Total works: ' + readWorksSet.size);
+                    
+                    if (highlight_read) {
+                        highlightReadWorks();
+                    }
+                } else {
+                    localStorage.removeItem('ao3_sync_in_progress');
+                }
+            } else {
+                localStorage.removeItem('ao3_sync_in_progress');
+            }
+        } catch (error) {
+            console.error('Error during background sync:', error);
+            localStorage.removeItem('ao3_sync_in_progress');
+        } finally {
+            syncInProgress = false;
+        }
+    }
 
 })(window.jQuery);
