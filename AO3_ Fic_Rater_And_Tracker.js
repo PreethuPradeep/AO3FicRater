@@ -3,7 +3,8 @@
 // @description  Adds Kudos/Hits ratio, read highlighting (red), kudos highlighting (blue), custom ratings, and update tracking to AO3.
 // @namespace    https://github.com/PreethuPradeep/AO3FicRater
 // @author       PeetaMellark (Original by Min)
-// @version      3.0.0
+// @version      3.0.1
+// @history      3.0.1 - Added extensive console.log messages for debugging all features.
 // @history      3.0.0 - Complete rewrite. Added 2-mode sync (History + Kudos). Added manual "Mark as Read" button to enable update tracking.
 // @homepageURL  https://github.com/PreethuPradeep/AO3FicRater
 // @downloadURL  https://raw.githubusercontent.com/PreethuPradeep/AO3FicRater/main/AO3_Fic_Rater.user.js
@@ -31,10 +32,8 @@ var lvl1 = 4;
 var ratio_yellow = '#fdf2a3';
 var lvl2 = 7;
 var ratio_green = '#c4eac3';
-// Your new colors
 var read_highlight_color = 'rgba(255, 0, 0, 0.05)';
 var kudos_highlight_color = 'rgba(0, 0, 255, 0.05)';
-// AO3 theme colors
 var ao3_bg = '#f8f8f8';
 var ao3_text = '#333333';
 var ao3_accent = '#900';
@@ -48,64 +47,60 @@ var kudosedWorksSet = new Set();
 var workMetadata = {};
 var syncInProgress = false;
 
-// STUFF HAPPENS BELOW //
-
 (function ($) {
+    console.log('%c[AO3 RATER]: Script loading...', 'color: #008080; font-weight: bold;');
 
-    // We must wait for all GM_getValue calls (which are async) to finish
-    // before we can run any of our code.
     Promise.all([
         GM_getValue('alwayscountlocal', 'yes'),
         GM_getValue('alwayssortlocal', 'no'),
         GM_getValue('hidehitcountlocal', 'yes'),
         GM_getValue('highlightreadlocal', 'yes'),
         GM_getValue('ao3_read_works', '[]'),
-        GM_getValue('ao3_kudosed_works', '[]'), // New
+        GM_getValue('ao3_kudosed_works', '[]'),
         GM_getValue('ao3_work_metadata', '{}')
     ]).then(function(values) {
         
-        // 1. Load all settings from storage
+        console.log('[AO3 RATER]: START: All settings and data loaded from GM_storage.');
+        
         always_count = (values[0] == 'yes');
         always_sort = (values[1] == 'yes');
         hide_hitcount = (values[2] == 'yes');
         highlight_read = (values[3] == 'yes');
 
-        // 2. Load all data from storage
         try {
             readWorksSet = new Set(JSON.parse(values[4]));
+            console.log(`[AO3 RATER]: Loaded ${readWorksSet.size} Read Work IDs.`);
         } catch (e) {
-            console.log('Failed to parse stored read works');
+            console.error('[AO3 RATER]: Failed to parse stored read works!', e);
             readWorksSet = new Set();
         }
 
         try {
-            kudosedWorksSet = new Set(JSON.parse(values[5])); // New
+            kudosedWorksSet = new Set(JSON.parse(values[5]));
+            console.log(`[AO3 RATER]: Loaded ${kudosedWorksSet.size} Kudosed Work IDs.`);
         } catch (e) {
-            console.log('Failed to parse stored kudosed works');
+            console.error('[AO3 RATER]: Failed to parse stored kudosed works!', e);
             kudosedWorksSet = new Set();
         }
 
         try {
             workMetadata = JSON.parse(values[6]);
+            console.log(`[AO3 RATER]: Loaded Metadata for ${Object.keys(workMetadata).length} works.`);
         } catch (e) {
-            console.log('Failed to parse stored work metadata');
+            console.error('[AO3 RATER]: Failed to parse stored work metadata!', e);
             workMetadata = {};
         }
 
-        // 3. Now that all settings and data are loaded, run the main script logic
         runMainScript();
     });
 
-    // This function contains all your code, but now it runs
-    // *after* all settings are loaded.
     function runMainScript() {
+        console.log('[AO3 RATER]: Running main script functions...');
         var countable = false;
         var sortable = false;
         var stats_page = false;
 
         checkCountable();
-        
-        // This function now just saves the URL if we're on the history page
         checkAndStoreHistoryUrl();
 
         if (always_count) {
@@ -114,13 +109,11 @@ var syncInProgress = false;
                 sortByRatio();
             }
         }
-
-        // This function now does everything: highlights, adds buttons, and shows updates
+        
         displayRatingsAndUpdates();
+        console.log('[AO3 RATER]: Main script functions complete.');
     }
 
-
-    // check if it's a list of works/bookmarks/statistics, or header on work page
     function checkCountable() {
         var found_stats = $('dl.stats');
         if (found_stats.length) {
@@ -140,15 +133,14 @@ var syncInProgress = false;
         }
     }
 
-    // --- attach the menu ---
     function addRatioMenu() {
+        console.log('[AO3 RATER]: Adding "Ratings & Stats" menu to header.');
         var header_menu = $('ul.primary.navigation.actions');
         var ratio_menu = $('<li class="dropdown"></li>').html('<a>Ratings & Stats</a>');
         header_menu.find('li.search').before(ratio_menu);
         var drop_menu = $('<ul class="menu dropdown-menu"></li>');
         ratio_menu.append(drop_menu);
 
-        // --- Standard Buttons ---
         var button_count = $('<li></li>').html('<a>Count on this page</a>');
         button_count.click(function () { countRatio(); });
         var button_sort = $('<li></li>').html('<a>Sort by kudos/hits ratio</a>');
@@ -164,8 +156,6 @@ var syncInProgress = false;
         }
         drop_menu.append(button_settings);
 
-        // --- Toggle Buttons ---
-        // (Simplified to use ternary operator for cleaner code)
         var button_count_toggle = $(always_count ? '<li class="count-yes"><a>Count automatically: YES</a></li>' : '<li class="count-no"><a>Count automatically: NO</a></li>');
         drop_menu.on('click', 'li.count-yes, li.count-no', function () {
             always_count = !always_count;
@@ -200,15 +190,14 @@ var syncInProgress = false;
             GM_setValue('highlightreadlocal', highlight_read ? 'yes' : 'no');
             $(this).find('a').text('Highlight read: ' + (highlight_read ? 'YES' : 'NO'));
             $(this).toggleClass('highlight-yes highlight-no');
-            // Refresh highlights on page
-            displayRatingsAndUpdates();
+            displayRatingsAndUpdates(); // Refresh highlights
         });
         drop_menu.append(button_highlight_toggle);
 
-        // --- Sync Buttons ---
         var button_refresh = $('<li class="refresh-reads"></li>').html('<a style="color: ' + ao3_accent + ';">🔄 Clear All Local Data</a>');
         drop_menu.on('click', 'li.refresh-reads', function () {
             if (confirm('This will delete all your saved ratings, read history, and kudos data from this script. Are you sure?')) {
+                console.log('%c[AO3 RATER]: User cleared all local data.', 'color: red; font-weight: bold;');
                 GM_deleteValue('ao3_read_works');
                 GM_deleteValue('ao3_kudosed_works');
                 GM_deleteValue('ao3_work_metadata');
@@ -238,6 +227,7 @@ var syncInProgress = false;
     // --- Helper function to fetch a page using GM_xmlhttpRequest ---
     function fetchPage(url) {
         return new Promise((resolve, reject) => {
+            // console.log(`[AO3 RATER]: Fetching page: ${url}`); // This is too noisy for a full sync
             GM_xmlhttpRequest({
                 method: "GET",
                 url: url,
@@ -245,10 +235,12 @@ var syncInProgress = false;
                     if (response.status >= 200 && response.status < 400) {
                         resolve(response.responseText);
                     } else {
+                        console.error(`[AO3 RATER]: Failed to fetch page: ${url} (Status: ${response.status})`);
                         reject(new Error('Failed to fetch page: ' + response.status));
                     }
                 },
                 onerror: function(error) {
+                    console.error(`[AO3 RATER]: Network error fetching ${url}:`, error);
                     reject(new Error('Network error: ' + error));
                 }
             });
@@ -259,7 +251,6 @@ var syncInProgress = false;
     function scrapeWorkIdsFromHTML(htmlToScrape) {
         var workIds = new Set();
         var $html = $(htmlToScrape);
-        // This selector is specific to work/bookmark blurbs on search/history pages
         $html.find('li.work.blurb h4.heading a, li.bookmark.blurb h4.heading a').each(function() {
             var workLink = $(this).attr('href');
             if (workLink && workLink.indexOf('/works/') !== -1) {
@@ -282,6 +273,7 @@ var syncInProgress = false;
             return;
         }
         syncInProgress = true;
+        console.log(`%c[SYNC ${syncType}]: Starting...`, 'color: blue; font-weight: bold;');
         
         var urlKey, dataKey, pageType, userLink;
         
@@ -317,6 +309,8 @@ var syncInProgress = false;
             if (baseUrl.indexOf('http') !== 0) {
                 baseUrl = window.location.origin + baseUrl;
             }
+            
+            console.log(`[SYNC ${syncType}]: Found base URL:`, baseUrl);
 
             $(buttonElement).find('a').text('Syncing... Fetching page 1...');
             
@@ -324,6 +318,7 @@ var syncInProgress = false;
             var $firstPage = $(firstPageHTML);
             
             var dataSet = (syncType === 'History') ? readWorksSet : kudosedWorksSet;
+            var originalSize = dataSet.size;
             
             var firstPageIds = scrapeWorkIdsFromHTML(firstPageHTML);
             firstPageIds.forEach(id => dataSet.add(id));
@@ -340,13 +335,17 @@ var syncInProgress = false;
                     }
                 }
             }
+            console.log(`[SYNC ${syncType}]: Found ${totalPages} total pages.`);
             
             alert(`Starting full ${syncType} sync for ${totalPages} pages. This will take a few minutes. Please leave this tab open.`);
             
             for (var page = 2; page <= totalPages; page++) {
                 await new Promise(resolve => setTimeout(resolve, 1500)); // 1.5 second throttle
                 
-                $(buttonElement).find('a').text(`Syncing page ${page}/${totalPages}...`);
+                var statusText = `Syncing page ${page}/${totalPages}...`;
+                $(buttonElement).find('a').text(statusText);
+                console.log(`[SYNC ${syncType}]: ${statusText}`);
+                
                 var pageUrl = baseUrl + '?page=' + page;
                 
                 try {
@@ -355,19 +354,21 @@ var syncInProgress = false;
                     pageIds.forEach(id => dataSet.add(id));
                     
                 } catch (error) {
-                    console.warn(`Error fetching ${syncType} page ${page}:`, error);
+                    console.warn(`[SYNC ${syncType}]: Error fetching page ${page}:`, error);
                 }
             }
             
+            var newIds = dataSet.size - originalSize;
             await GM_setValue(dataKey, JSON.stringify([...dataSet]));
             
             $(buttonElement).find('a').text(`🔄 Sync Full ${syncType}`);
+            console.log(`%c[SYNC ${syncType}]: COMPLETE. Found ${newIds} new IDs. Total saved: ${dataSet.size}`, 'color: green; font-weight: bold;');
             alert(`Full ${syncType} sync complete! ${dataSet.size} works have been saved. Please refresh the page to see highlights.`);
             
             displayRatingsAndUpdates(); // Refresh highlights
             
         } catch (error) {
-            console.error(`Error during full ${syncType} sync:`, error);
+            console.error(`%c[SYNC ${syncType}]: FAILED:`, 'color: red; font-weight: bold;', error);
             $(buttonElement).find('a').text(`🔄 Sync Full ${syncType}`);
             alert(`Error during ${syncType} sync: ${error.message}. Some works may have been saved. Please try again.`);
         } finally {
@@ -388,8 +389,10 @@ var syncInProgress = false;
         var currentUrl = window.location.href;
         if (currentUrl.indexOf('/users/') !== -1) {
             if (currentUrl.indexOf('/readings') !== -1) {
+                console.log('[AO3 RATER]: On History page. Storing URL.');
                 GM_setValue('ao3_history_url', currentUrl.split('?')[0]);
             } else if (currentUrl.indexOf('/kudos') !== -1) {
+                console.log('[AO3 RATER]: On Kudos page. Storing URL.');
                 GM_setValue('ao3_kudos_url', currentUrl.split('?')[0]);
             }
         }
@@ -397,18 +400,17 @@ var syncInProgress = false;
 
     // --- Highlight, Track, and Add Buttons ---
     function displayRatingsAndUpdates() {
+        console.log('[AO3 RATER]: Running displayRatingsAndUpdates()...');
+        var highlightedRead = 0;
+        var highlightedKudos = 0;
+
         $('li.work.blurb, li.bookmark').each(function() {
             var $work = $(this);
             var workLink = $work.find('h4.heading a').first().attr('href');
             
-            if (!workLink || workLink.indexOf('/works/') === -1) {
-                return; // Not a work blurb, skip
-            }
-                
+            if (!workLink || workLink.indexOf('/works/') === -1) return;
             var workIdMatch = workLink.match(/\/works\/(\d+)/);
-            if (!workIdMatch || !workIdMatch[1]) {
-                return; // No Work ID found
-            }
+            if (!workIdMatch || !workIdMatch[1]) return;
                 
             var workId = workIdMatch[1];
             var metadata = workMetadata[workId] || {};
@@ -416,35 +418,34 @@ var syncInProgress = false;
             var isKudosed = kudosedWorksSet.has(workId);
             
             var $stats = $work.find('dl.stats');
-
+            
             // --- 1. Highlighting Logic ---
             if (highlight_read) {
+                // Clear old highlights first
+                $work.css('background-color', '').css('border-left', '').css('margin-left', '').css('padding-left', '');
+
                 if (isRead || metadata.lastReadChapters !== undefined) {
                     $work.css('background-color', read_highlight_color);
                     $work.css('border-left', '3px solid ' + ao3_accent);
                     $work.css('margin-left', '-3px');
                     $work.css('padding-left', '8px');
+                    highlightedRead++;
                 } else if (isKudosed) {
                     $work.css('background-color', kudos_highlight_color);
+                    highlightedKudos++;
                 }
             }
 
             // --- 2. Inject UI ---
-            // Ensure container exists
             var $uiContainer = $work.find('.custom-ui-container');
             if ($uiContainer.length === 0) {
                 $uiContainer = $('<div class="custom-ui-container" style="margin-top: 5px; display: flex; gap: 10px; align-items: center;"></div>');
-                $stats.before($uiContainer); // Prepend above stats
+                $stats.before($uiContainer);
             }
             
-            // Get rating
             var ratingText = metadata.rating !== undefined ? `Rating: ${metadata.rating}/9` : 'Rate 0-9';
             var ratingColor = metadata.rating !== undefined ? getRatingColor(metadata.rating) : ao3_secondary;
-
-            // Define button styles
             var buttonStyle = 'cursor:pointer; color:' + ao3_accent + '; text-decoration:none; border:1px solid ' + ao3_border + '; padding:2px 6px; border-radius:3px; display:inline-block; font-size:0.9em;';
-
-            // Build UI HTML
             var uiHTML = `
                 <span class="custom-rate-button" data-work-id="${workId}" style="${buttonStyle} color:${ratingColor};" title="Click to rate this fic">${ratingText}</span>
                 <span class="custom-mark-read-button" data-work-id="${workId}" style="${buttonStyle}" title="Mark all current chapters as read">✓ Mark as Read</span>
@@ -452,7 +453,14 @@ var syncInProgress = false;
             $uiContainer.html(uiHTML);
 
             // --- 3. Update Notification Logic ---
+            var $updateContainer = $work.find('.custom-update-container'); // Find existing
+            
             if (metadata.lastReadChapters !== undefined) {
+                if ($updateContainer.length === 0) { // Create if not found
+                    $updateContainer = $('<div class="custom-update-container" style="margin-top: 5px;"></div>');
+                    $stats.prepend($updateContainer);
+                }
+                
                 var $chapters = $work.find('dd.chapters');
                 var chapterText = $chapters.text().trim();
                 var currentChapters = 0;
@@ -471,16 +479,14 @@ var syncInProgress = false;
                 
                 var updateMessage = '';
                 
-                // Check for new chapters
-                if (lastReadDate && updateDate > lastReadDate && currentChapters > metadata.lastReadChapters) {
+                if (lastReadDate && updateDate && updateDate > lastReadDate && currentChapters > metadata.lastReadChapters) {
                     var unreadChapters = currentChapters - metadata.lastReadChapters;
-                    updateMessage = `
+                    updateMessage += `
                         <dt style="font-weight:bold; color:${ao3_accent};">⚠ Updated:</dt>
                         <dd style="color:${ao3_accent}; font-weight:bold;">+${unreadChapters} new chapter${unreadChapters > 1 ? 's' : ''}</dd>
                     `;
                 }
                 
-                // Check for chapters left
                 var chaptersRemaining = totalChapters > 0 ? totalChapters - metadata.lastReadChapters : 0;
                 if (chaptersRemaining > 0 && currentChapters > metadata.lastReadChapters) {
                      updateMessage += `
@@ -494,40 +500,34 @@ var syncInProgress = false;
                     `;
                 }
                 
-                // Add last read date
                 if (lastReadDate) {
                      updateMessage += `
                         <dt style="color:${ao3_secondary};">Last read:</dt>
                         <dd style="color:${ao3_secondary};">${formatReadableDate(lastReadDate)}</dd>
                     `;
                 }
-
-                // Inject update info
-                var $updateContainer = $work.find('.custom-update-container');
-                if ($updateContainer.length === 0) {
-                    $updateContainer = $('<div class="custom-update-container" style="margin-top: 5px;"></div>');
-                    $stats.prepend($updateContainer); // Prepend before stats, after UI
-                }
                 $updateContainer.html(updateMessage);
+            } else {
+                 if ($updateContainer.length > 0) $updateContainer.empty(); // Clear old message if no metadata
             }
         });
 
+        console.log(`[AO3 RATER]: Display complete. Highlighted ${highlightedRead} READ and ${highlightedKudos} KUDOSED works.`);
+
         // --- 4. Add Global Click Handlers for UI ---
-        // Must be done *outside* the .each() loop
-        
-        // Handler for Rating
-        $(document).off('click', '.custom-rate-button').on('click', '.custom-rate-button', function(e) {
+        $(document).off('click.rater').on('click.rater', '.custom-rate-button', function(e) {
             e.preventDefault();
             e.stopPropagation();
             var workId = $(this).data('work-id');
+            console.log(`[AO3 RATER]: User clicked RATE for Work ID: ${workId}`);
             promptRating(workId);
         });
 
-        // Handler for Mark as Read
-        $(document).off('click', '.custom-mark-read-button').on('click', '.custom-mark-read-button', function(e) {
+        $(document).off('click.marker').on('click.marker', '.custom-mark-read-button', function(e) {
             e.preventDefault();
             e.stopPropagation();
             var workId = $(this).data('work-id');
+            console.log(`%c[AO3 RATER]: User clicked MARK AS READ for Work ID: ${workId}`, 'color: orange;');
             var $work = $(this).closest('li.work.blurb, li.bookmark');
             markAsRead(workId, $work);
         });
@@ -545,6 +545,7 @@ var syncInProgress = false;
                     workMetadata[workId] = {};
                 }
                 workMetadata[workId].rating = rating;
+                console.log(`[AO3 RATER]: Saved rating ${rating} for Work ID: ${workId}`);
                 saveMetadata();
                 displayRatingsAndUpdates(); // Refresh page to show new rating
             } else if (rating !== '' && rating !== currentRating) {
@@ -567,7 +568,6 @@ var syncInProgress = false;
             workMetadata[workId] = {};
         }
         
-        // Scrape current chapters from the blurb
         var $chapters = $work.find('dd.chapters');
         var chapterText = $chapters.text().trim();
         var currentChapters = 0;
@@ -581,10 +581,12 @@ var syncInProgress = false;
         workMetadata[workId].lastReadDate = new Date().toISOString();
         workMetadata[workId].lastReadChapters = currentChapters;
         
-        // Also add to main read list
+        console.log(`[AO3 RATER]: Marking Work ID ${workId} as read up to chapter ${currentChapters}.`);
+        
         if (!readWorksSet.has(workId)) {
             readWorksSet.add(workId);
             GM_setValue('ao3_read_works', JSON.stringify([...readWorksSet]));
+            console.log(`[AO3 RATER]: Added Work ID ${workId} to main 'read' list.`);
         }
         
         saveMetadata();
@@ -593,34 +595,29 @@ var syncInProgress = false;
 
     // --- Utility Functions ---
     function saveMetadata() {
+        console.log('[AO3 RATER]: Saving workMetadata to GM_storage...');
         GM_setValue('ao3_work_metadata', JSON.stringify(workMetadata));
     }
 
-function parseDate(dateStr) {
-    if (!dateStr) return null;
-    
-    dateStr = dateStr.replace(/Last updated:\s*/i, '');
-
-    var match = dateStr.match(/(\d{1,2})\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s(\d{4})/);
-    if (match) {
-        return new Date(match[2] + ' ' + match[1] + ', ' + match[3]);
+    function parseDate(dateStr) {
+        if (!dateStr) return null;
+        dateStr = dateStr.replace(/Last updated:\s*/i, '');
+        var match = dateStr.match(/(\d{1,2})\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s(\d{4})/);
+        if (match) {
+            return new Date(match[2] + ' ' + match[1] + ', ' + match[3]);
+        }
+        match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+        if (match) {
+            return new Date(dateStr);
+        }
+        if (dateStr.indexOf('T') > -1) {
+             var isoDate = new Date(dateStr);
+             if (!isNaN(isoDate.getTime())) return isoDate;
+        }
+        var date = new Date(dateStr);
+        if (!isNaN(date.getTime())) return date;
+        return null;
     }
-    
-    match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
-    if (match) {
-        return new Date(dateStr);
-    }
-    
-    if (dateStr.indexOf('T') > -1) { // Handle ISO dates
-         var isoDate = new Date(dateStr);
-         if (!isNaN(isoDate.getTime())) return isoDate;
-    }
-
-    var date = new Date(dateStr); // Fallback
-    if (!isNaN(date.getTime())) return date;
-    
-    return null;
-}
 
     function formatReadableDate(date) {
         if (!date) return 'Unknown';
@@ -641,35 +638,102 @@ function parseDate(dateStr) {
         }
     }
     
+    // --- Auto-save kudos/read progress on a work page ---
+    function setupWorkPageTracking() {
+        var currentUrl = window.location.href;
+        
+        // 1. Auto-save Kudos when clicking the Kudos button
+        $(document).on('click', 'form[action$="/kudos"] input[type="submit"]', function() {
+            var workIdMatch = window.location.href.match(/\/works\/(\d+)/);
+            if (workIdMatch && workIdMatch[1]) {
+                var workId = workIdMatch[1];
+                if (!kudosedWorksSet.has(workId)) {
+                    kudosedWorksSet.add(workId);
+                    GM_setValue('ao3_kudosed_works', JSON.stringify([...kudosedWorksSet]));
+                    console.log(`%c[AO3 RATER]: Kudos button clicked. Saved Work ID ${workId} to kudosed list.`, 'color: orange;');
+                }
+            }
+        });
+
+        // 2. Auto-save read progress when on a work page
+        if (currentUrl.match(/\/works\/(\d+)/)) {
+            var workIdMatch = currentUrl.match(/\/works\/(\d+)/);
+            if (workIdMatch && workIdMatch[1]) {
+                var workIdNum = workIdMatch[1];
+                
+                // Add to read set
+                if (!readWorksSet.has(workIdNum)) {
+                    readWorksSet.add(workIdNum);
+                    GM_setValue('ao3_read_works', JSON.stringify([...readWorksSet]));
+                    console.log(`%c[AO3 RATER]: Work page loaded. Added Work ID ${workIdNum} to read list.`, 'color: orange;');
+                }
+                
+                // Update metadata (last read date, current chapter)
+                if (!workMetadata[workIdNum]) {
+                    workMetadata[workIdNum] = {};
+                }
+                workMetadata[workIdNum].lastReadDate = new Date().toISOString();
+                
+                // Try to find the *current* chapter number
+                var $chapterTitle = $('h3.title').text().match(/Chapter (\d+)/);
+                var $chapterDropdown = $('#selected_id option[selected="selected"]');
+                var currentChapter = 1;
+
+                if ($chapterTitle && $chapterTitle[1]) {
+                    currentChapter = parseInt($chapterTitle[1]);
+                } else if ($chapterDropdown.length > 0) {
+                    currentChapter = parseInt($chapterDropdown.val());
+                } else {
+                    // It's a one-shot
+                    var $chapters = $('dd.chapters');
+                    var chapterText = $chapters.text().trim();
+                    if (chapterText === '1/1') {
+                         currentChapter = 1;
+                    }
+                }
+                
+                // Only save the chapter if it's newer than the one we have
+                var oldChapters = workMetadata[workIdNum].lastReadChapters || 0;
+                if (currentChapter >= oldChapters) {
+                    workMetadata[workIdNum].lastReadChapters = currentChapter;
+                    console.log(`%c[AO3 RATER]: Work page loaded. Updated last-read chapter for ${workIdNum} to ${currentChapter}.`, 'color: orange;');
+                }
+                
+                saveMetadata();
+            }
+        }
+    }
+    
     // --- Functions from the original script ---
     function countRatio() {
         if (countable) {
             $('dl.stats').each(function () {
-                var hits_value = $(this).find('dd.hits');
-                var kudos_value = $(this).find('dd.kudos');
+                var $hits = $(this).find('dd.hits');
+                var $kudos = $(this).find('dd.kudos');
+                if ($kudos.length && $hits.length && $hits.text() !== '0') {
+                    var hits_count = parseInt($hits.text().replace(/\D/g, ''));
+                    var kudos_count = parseInt($kudos.text().replace(/\D/g, ''));
+                    if (hits_count > 0) {
+                        var percents = 100 * kudos_count / hits_count;
+                        var percents_print = percents.toFixed(1).replace('.', ',');
+                        var ratio_label = $('<dt class="kudoshits"></dt>').text('Kudos/Hits:');
+                        var ratio_value = $('<dd class="kudoshits"></dd>').text(percents_print + '%').css('font-weight', 'bold');
+                        $hits.after(ratio_label, ratio_value);
 
-                if (kudos_value.length && hits_value.length && hits_value.text() !== '0') {
-                    var hits_count = parseInt(hits_value.text().replace(/\D/g, ''));
-                    var kudos_count = parseInt(kudos_value.text().replace(/\D/g, ''));
-                    var percents = 100 * kudos_count / hits_count;
-                    var percents_print = percents.toFixed(1).replace('.', ',');
-                    var ratio_label = $('<dt class="kudoshits"></dt>').text('Kudos/Hits:');
-                    var ratio_value = $('<dd class="kudoshits"></dd>').text(percents_print + '%').css('font-weight', 'bold');
-                    hits_value.after(ratio_label, ratio_value);
-
-                    if (colourbg) {
-                        if (percents >= lvl2) {
-                            ratio_value.css('background-color', ratio_green);
-                        } else if (percents >= lvl1) {
-                            ratio_value.css('background-color', ratio_yellow);
-                        } else {
-                            ratio_value.css('background-color', ratio_red);
+                        if (colourbg) {
+                            if (percents >= lvl2) {
+                                ratio_value.css('background-color', ratio_green);
+                            } else if (percents >= lvl1) {
+                                ratio_value.css('background-color', ratio_yellow);
+                            } else {
+                                ratio_value.css('background-color', ratio_red);
+                            }
                         }
+                        if (hide_hitcount && !stats_page) {
+                            $(this).find('.hits').css('display', 'none');
+                        }
+                        $(this).closest('li').attr('kudospercent', percents);
                     }
-                    if (hide_hitcount && !stats_page) {
-                        $(this).find('.hits').css('display', 'none');
-                    }
-                    $(this).closest('li').attr('kudospercent', percents);
                 } else {
                     $(this).closest('li').attr('kudospercent', 0);
                 }
@@ -722,5 +786,10 @@ function parseDate(dateStr) {
             });
         }
     }
+    
+    // --- Removed your auto-sync functions ---
+    // They are complex and prone to errors.
+    // The manual "Sync" buttons are safer and more reliable.
+    // The work page tracking will handle all *new* fics.
 
 })(window.jQuery);
