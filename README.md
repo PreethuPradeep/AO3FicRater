@@ -5,22 +5,22 @@ This project serves as a case study in client-side data management and asynchron
 
 ## User Features
   ### Kudos/Hits Ratio:
-    Automatically calculates and displays the Kudos/Hits percentage on all fic blurbs, with color-coding for high/medium/low engagement.
+  Automatically calculates and displays the Kudos/Hits percentage on all fic blurbs, with color-coding for high/medium/low engagement.
   
   ### Full History Sync:
-    A one-click tool that scrapes your entire AO3 reading history (even 650+ pages) and saves it locally.
+  A one-click tool that scrapes your entire AO3 reading history (even 650+ pages) and saves it locally.
   
   ### Read History Highlighting:
-    Highlights all fics from your synced history with a (default) red background, so you never lose track of what you've read.
+  Highlights all fics from your synced history with a (default) red background, so you never lose track of what you've read.
   
   ### Custom 0-9 Rating System:
-    Adds a [Rate 0-9] button to all fics, allowing you to apply and save a personal rating.
+  Adds a [Rate 0-9] button to all fics, allowing you to apply and save a personal rating.
   
   ### Manual Progress Tracking:
-    Adds a [✓ Mark as Read] button that saves your progress (current chapter count and date).
+  Adds a [✓ Mark as Read] button that saves your progress (current chapter count and date).
   
   ### Automatic Update Notifications:
-    The script compares your saved progress to the fic's current stats and injects a "⚠ Updated!" warning if new chapters have been posted since you last marked it as read.
+  The script compares your saved progress to the fic's current stats and injects a "⚠ Updated!" warning if new chapters have been posted since you last marked it as read.
   
   ### "Chapters Left" Counter:
     Works with the Update Notifications to show you exactly how many chapters you have left to read.
