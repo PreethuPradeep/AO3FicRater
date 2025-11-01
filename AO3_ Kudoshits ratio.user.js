@@ -3,7 +3,9 @@
 // @description Replace hitcount with kudos/hits percentage. Sort works by ratio or ratings. Highlight fics you've read, show updates, and track your ratings.
 // @namespace	https://greasyfork.org/scripts/3144-ao3-kudos-hits-ratio
 // @author	Min
-// @version	1.9.1
+// @version	1.9.3
+// @history	1.9.3 - added last read date and chapters remaining display for highlighted works
+// @history	1.9.2 - fixed history highlighting on search pages, improved background sync from any AO3 page
 // @history	1.9.1 - removed mark read button, changed highlight to red with 0.1 opacity, only on search pages
 // @history	1.9 - fixed mark read button, added automatic background sync of full reading history
 // @history	1.8 - improved UI with AO3 theme colors and better styling
@@ -129,6 +131,9 @@ var syncCheckInterval = null;
 
     // Display ratings if enabled
     displayRatingsAndUpdates();
+    
+    // Set up click tracking for highlighted works
+    setupWorkClickTracking();
 
 
 
@@ -460,8 +465,15 @@ var syncCheckInterval = null;
         // Check if we're on a history page or if we need to navigate there
         var currentUrl = window.location.href;
         
-        // If on history page, extract works
-        if (currentUrl.indexOf('/users/') !== -1 && (currentUrl.indexOf('/readings') !== -1 || currentUrl.indexOf('/works') !== -1)) {
+        // If on history page, extract works and save URL
+        if (currentUrl.indexOf('/users/') !== -1 && currentUrl.indexOf('/readings') !== -1) {
+            // Store the history URL for future background syncs
+            var historyUrl = currentUrl.split('?')[0]; // Remove page parameter
+            localStorage.setItem('ao3_history_url', historyUrl);
+            
+            extractFromCurrentPage();
+            readWorksExtracted = true;
+        } else if (currentUrl.indexOf('/users/') !== -1 && currentUrl.indexOf('/works') !== -1) {
             extractFromCurrentPage();
             readWorksExtracted = true;
         } else {
@@ -657,10 +669,10 @@ var syncCheckInterval = null;
             return;
         }
         
-        // Only highlight on search/browse result pages
         $('li.work.blurb, li.bookmark').each(function() {
             var $work = $(this);
-            var workLink = $work.find('h4.heading a, dd.chapters a, a').first().attr('href');
+            // Only look at the main heading link for the work, not all links
+            var workLink = $work.find('h4.heading a').first().attr('href');
             
             if (workLink && workLink.indexOf('/works/') !== -1) {
                 var workId = workLink.match(/\/works\/(\d+)/);
@@ -678,13 +690,16 @@ var syncCheckInterval = null;
     function displayRatingsAndUpdates() {
         $('li.work.blurb, li.bookmark').each(function() {
             var $work = $(this);
-            var workLink = $work.find('h4.heading a, dd.chapters a, a').first().attr('href');
+            var workLink = $work.find('h4.heading a').first().attr('href');
             
             if (workLink && workLink.indexOf('/works/') !== -1) {
                 var workId = workLink.match(/\/works\/(\d+)/);
                 if (workId && workId[1]) {
                     var workIdNum = workId[1];
                     var metadata = workMetadata[workIdNum] || {};
+                    
+                    // Check if this work is in read history
+                    var isRead = readWorksSet.has(workIdNum);
                     
                     // Get current work stats
                     var $stats = $work.find('dl.stats');
@@ -735,6 +750,43 @@ var syncCheckInterval = null;
                         promptRating(workIdNum);
                     });
                     
+                    // Display last read info for highlighted works
+                    if (isRead && highlight_read) {
+                        var $readInfoContainer = $work.find('.custom-read-info-container');
+                        if ($readInfoContainer.length === 0) {
+                            $readInfoContainer = $('<div class="custom-read-info-container"></div>');
+                            $stats.prepend($readInfoContainer);
+                        }
+                        
+                        var readInfoHTML = '';
+                        
+                        // Display last read date if available
+                        if (metadata.lastReadDate) {
+                            var lastReadDate = parseDate(metadata.lastReadDate);
+                            if (lastReadDate) {
+                                var formattedDate = formatReadableDate(lastReadDate);
+                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Last read:</dt>';
+                                readInfoHTML += '<dd style="color:' + ao3_secondary + ';">' + formattedDate + '</dd>';
+                            }
+                        }
+                        
+                        // Display chapters remaining if we have progress info
+                        if (metadata.lastReadChapters !== undefined && totalChapters > 0) {
+                            var chaptersRead = metadata.lastReadChapters;
+                            var chaptersRemaining = totalChapters - chaptersRead;
+                            
+                            if (chaptersRemaining > 0) {
+                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Chapters left:</dt>';
+                                readInfoHTML += '<dd style="color:' + ao3_secondary + ';">' + chaptersRemaining + ' / ' + totalChapters + '</dd>';
+                            } else if (chaptersRead >= totalChapters) {
+                                readInfoHTML += '<dt style="color:' + ao3_secondary + ';">Status:</dt>';
+                                readInfoHTML += '<dd style="color:green;">Complete</dd>';
+                            }
+                        }
+                        
+                        $readInfoContainer.html(readInfoHTML);
+                    }
+                    
                     // Check for updates
                     if (metadata.lastReadDate && metadata.lastReadChapters !== undefined && updateDate) {
                         var lastReadDate = parseDate(metadata.lastReadDate);
@@ -757,6 +809,53 @@ var syncCheckInterval = null;
                             $updateContainer.html(updateMessage);
                         }
                     }
+                }
+            }
+        });
+    }
+    
+    // Set up click tracking for works to record when they're read
+    function setupWorkClickTracking() {
+        // Track clicks on work links on search/browse pages
+        $(document).on('click', 'li.work.blurb h4.heading a, li.bookmark h4.heading a', function(e) {
+            var $link = $(this);
+            var workLink = $link.attr('href');
+            
+            if (workLink && workLink.indexOf('/works/') !== -1) {
+                var workId = workLink.match(/\/works\/(\d+)/);
+                if (workId && workId[1]) {
+                    var workIdNum = workId[1];
+                    var $work = $link.closest('li.work.blurb, li.bookmark');
+                    
+                    // Get current chapter info
+                    var $chapters = $work.find('dd.chapters');
+                    var chapterText = $chapters.text().trim();
+                    var currentChapters = 0;
+                    var totalChapters = 0;
+                    
+                    if (chapterText) {
+                        var chapterMatch = chapterText.match(/(\d+)/);
+                        if (chapterMatch) {
+                            currentChapters = parseInt(chapterMatch[1]);
+                        }
+                        
+                        var totalMatch = chapterText.match(/\/(\d+)/);
+                        if (totalMatch) {
+                            totalChapters = parseInt(totalMatch[1]);
+                        } else {
+                            totalChapters = currentChapters;
+                        }
+                    }
+                    
+                    // Update metadata with current date and chapter count
+                    if (!workMetadata[workIdNum]) {
+                        workMetadata[workIdNum] = {};
+                    }
+                    workMetadata[workIdNum].lastReadDate = new Date().toISOString();
+                    workMetadata[workIdNum].lastReadChapters = currentChapters;
+                    
+                    // Save metadata
+                    saveMetadata();
                 }
             }
         });
@@ -789,6 +888,41 @@ var syncCheckInterval = null;
         }
         
         return null;
+    }
+    
+    // Format date in a readable relative format
+    function formatReadableDate(date) {
+        if (!date) return 'Unknown';
+        
+        var now = new Date();
+        var diffMs = now.getTime() - date.getTime();
+        var diffSecs = Math.floor(diffMs / 1000);
+        var diffMins = Math.floor(diffSecs / 60);
+        var diffHours = Math.floor(diffMins / 60);
+        var diffDays = Math.floor(diffHours / 24);
+        var diffWeeks = Math.floor(diffDays / 7);
+        var diffMonths = Math.floor(diffDays / 30);
+        var diffYears = Math.floor(diffDays / 365);
+        
+        if (diffSecs < 60) {
+            return 'Just now';
+        } else if (diffMins < 60) {
+            return diffMins + ' minute' + (diffMins > 1 ? 's' : '') + ' ago';
+        } else if (diffHours < 24) {
+            return diffHours + ' hour' + (diffHours > 1 ? 's' : '') + ' ago';
+        } else if (diffDays < 7) {
+            return diffDays + ' day' + (diffDays > 1 ? 's' : '') + ' ago';
+        } else if (diffWeeks < 4) {
+            return diffWeeks + ' week' + (diffWeeks > 1 ? 's' : '') + ' ago';
+        } else if (diffMonths < 12) {
+            return diffMonths + ' month' + (diffMonths > 1 ? 's' : '') + ' ago';
+        } else if (diffYears < 2) {
+            return diffYears + ' year ago';
+        } else {
+            // For older dates, show actual date
+            var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+            return months[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear();
+        }
     }
 
     // Save metadata to localStorage
@@ -849,6 +983,138 @@ var syncCheckInterval = null;
                     checkAndExtractNewWorks();
                 }
             }, 5000); // Check every 5 seconds
+            
+            // Check for history sync once after a delay
+            setTimeout(function() {
+                if (!syncInProgress && window.location.hostname.indexOf('archiveofourown.org') !== -1) {
+                    checkAndStartHistorySync();
+                }
+            }, 10000); // Wait 10 seconds before first check
+        }
+    }
+    
+    // Check if we should navigate to history page to start background sync
+    function checkAndStartHistorySync() {
+        // Don't start if already syncing
+        if (syncInProgress) {
+            return;
+        }
+        
+        // Check if we already synced in this session
+        if (localStorage.getItem('ao3_sync_in_progress') === 'true') {
+            return;
+        }
+        
+        // Only check on main AO3 pages (not already on history page)
+        var currentUrl = window.location.href;
+        if (currentUrl.indexOf('/readings') === -1) {
+            // Check if we have a stored history URL
+            var storedHistoryUrl = localStorage.getItem('ao3_history_url');
+            if (storedHistoryUrl) {
+                // Check last sync time
+                var lastSync = localStorage.getItem('ao3_last_sync');
+                var shouldSync = true;
+                
+                if (lastSync) {
+                    var lastSyncTime = parseInt(lastSync);
+                    var now = Date.now();
+                    // Only sync if it's been more than 24 hours since last sync
+                    if (now - lastSyncTime < 24 * 60 * 60 * 1000) {
+                        shouldSync = false;
+                    }
+                }
+                
+                if (shouldSync) {
+                    console.log('Starting background history sync...');
+                    localStorage.setItem('ao3_sync_in_progress', 'true');
+                    // Navigate to history page in background to start sync
+                    fetch(storedHistoryUrl + '?page=1')
+                        .then(function(response) {
+                            if (response.ok) {
+                                return response.text();
+                            }
+                            throw new Error('Failed to fetch history page');
+                        })
+                        .then(function(html) {
+                            var $page = $(html);
+                            var ids = scrapeWorkIdsFromHTML(html);
+                            ids.forEach(function(id) {
+                                readWorksSet.add(id);
+                            });
+                            localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+                            
+                            // Find total pages
+                            var $pagination = $page.find('ol.pagination');
+                            var totalPages = 1;
+                            if ($pagination.length > 0) {
+                                var $lastPageLink = $pagination.find('li:last-child a');
+                                if ($lastPageLink.length > 0) {
+                                    var lastPageText = $lastPageLink.text().trim();
+                                    var pageMatch = lastPageText.match(/(\d+)/);
+                                    if (pageMatch && pageMatch[1]) {
+                                        totalPages = parseInt(pageMatch[1]);
+                                    }
+                                }
+                            }
+                            
+                            // Fetch remaining pages in background
+                            if (totalPages > 1) {
+                                syncRemainingPages(storedHistoryUrl, totalPages);
+                            } else {
+                                localStorage.setItem('ao3_last_sync', Date.now().toString());
+                                localStorage.removeItem('ao3_sync_in_progress');
+                            }
+                        })
+                        .catch(function(error) {
+                            console.error('Error fetching history:', error);
+                            localStorage.removeItem('ao3_sync_in_progress');
+                        });
+                }
+            }
+        }
+    }
+    
+    // Sync remaining pages in background
+    async function syncRemainingPages(baseUrl, totalPages) {
+        syncInProgress = true;
+        
+        try {
+            for (var page = 2; page <= totalPages; page++) {
+                // Throttle requests
+                await new Promise(function(resolve) {
+                    setTimeout(resolve, 1500);
+                });
+                
+                try {
+                    var pageUrl = baseUrl + '?page=' + page;
+                    var pageResponse = await fetch(pageUrl);
+                    
+                    if (pageResponse.ok) {
+                        var pageHTML = await pageResponse.text();
+                        var pageIds = scrapeWorkIdsFromHTML(pageHTML);
+                        pageIds.forEach(function(id) {
+                            readWorksSet.add(id);
+                        });
+                        localStorage.setItem('ao3_read_works', JSON.stringify([...readWorksSet]));
+                        console.log('Synced page ' + page + '/' + totalPages + ' (' + readWorksSet.size + ' total works)');
+                    }
+                } catch (error) {
+                    console.warn('Error fetching page ' + page + ':', error);
+                }
+            }
+            
+            localStorage.setItem('ao3_last_sync', Date.now().toString());
+            localStorage.removeItem('ao3_sync_in_progress');
+            console.log('Background sync complete! Total works: ' + readWorksSet.size);
+            
+            if (highlight_read) {
+                highlightReadWorks();
+            }
+        } catch (error) {
+            console.error('Error during background sync:', error);
+            localStorage.removeItem('ao3_sync_in_progress');
+        } finally {
+            syncInProgress = false;
         }
     }
 
@@ -880,6 +1146,7 @@ var syncCheckInterval = null;
         
         try {
             syncInProgress = true;
+            localStorage.setItem('ao3_sync_in_progress', 'true');
             
             // Get current URL
             var baseUrl = window.location.href;
@@ -950,19 +1217,28 @@ var syncCheckInterval = null;
                     }
                     
                     localStorage.setItem('ao3_last_sync', Date.now().toString());
+                    localStorage.removeItem('ao3_sync_in_progress');
                     console.log('Background sync complete! Total works: ' + readWorksSet.size);
                     
                     if (highlight_read) {
                         highlightReadWorks();
                     }
+                } else {
+                    localStorage.removeItem('ao3_sync_in_progress');
                 }
+            } else {
+                localStorage.removeItem('ao3_sync_in_progress');
             }
         } catch (error) {
             console.error('Error during background sync:', error);
+            localStorage.removeItem('ao3_sync_in_progress');
         } finally {
             syncInProgress = false;
         }
     }
+
+})(window.jQuery);
+
 
 })(jQuery);
 
