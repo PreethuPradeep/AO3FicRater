@@ -143,7 +143,7 @@ var workMetadata = {};
                     var percents_print = percents.toFixed(1).replace('.', ',');
                     var ratio_label = $('<dt class="kudoshits"></dt>').text('Kudos/Hits:');
                     var ratio_value = $('<dd class="kudoshits"></dd>').text(percents_print + '%').css('font-weight', 'bold');
-                    hits_value.after('\n', ratio_label, '\n', ratio_value);
+                    hits_value.after(ratio_label, ratio_value);
 
                     if (colourbg) {
                         if (percents >= lvl2) {
@@ -321,7 +321,7 @@ var workMetadata = {};
                 sortByRatio(true);
                 button_sort_stats_asc.after(button_sort_stats).detach();
             });
-            $('ul.sorting.actions li:nth-child(3)').after('\n', button_sort_stats);
+            $('ul.sorting.actions li:nth-child(3)').after(button_sort_stats);
         }
     }
 
